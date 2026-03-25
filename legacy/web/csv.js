@@ -89,6 +89,7 @@ export function detectColumns(headers) {
     location: idx(["Room Location","location","room","hall"]),
     date: idx(["Session Date","date","day"]),
     time: idx(["Session time","time"]),
+    order: idx(["Order","presentation order","order within session"]),
     cat1: idx(["category_primary"]),
     cat2: idx(["category_secondary"]),
     keywords: idx(["keywords"])

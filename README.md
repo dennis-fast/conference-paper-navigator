@@ -28,7 +28,7 @@ The app uses this structure to organize papers and to derive planning recommenda
    - Purpose: inspect singular papers in conference context.
    - View: grouped by Date → Session → Location.
    - Typical use: scan sessions, then filter/search by topic, session, and location.
-   - Includes: global search, category/session/location filters, wins-only visibility filter.
+   - Includes: global search, category/session/location filters, wins-only visibility filter, `Oral only (in-person)`, and `Oral only (in-person, no Salle Le Chellah)` shortcuts.
 
 - **2D Embeddings**
    - Purpose: inspect paper clusters by semantic similarity.
@@ -44,9 +44,9 @@ The app uses this structure to organize papers and to derive planning recommenda
 
 - **Oral Schedule**
    - Purpose: support attendance planning for in-person oral sessions.
-   - View: recommendations per slot (primary + backup room) using ranking and topic-match signals.
-   - Typical use: decide where to go each time block with preference-aware guidance.
-   - Includes: slot-level ranking-aware room choices and backup alternatives.
+   - View: either room-based recommendations per slot or presentation-based recommendations grouped by within-session order.
+   - Typical use: decide where to go each time block with preference-aware guidance, or compare the best-rated talk for each presentation order across simultaneous sessions.
+   - Includes: slot-level primary + backup room choices, presentation-order mode, and displayed `μ` / `wins` for both primary and backup recommendations.
 
 - **Posters**
    - Purpose: prioritize poster exploration.
@@ -172,7 +172,8 @@ Repository settings requirement:
 
 - Pairwise ranking with uncertainty-aware Elo updates
 - Overview grouped by date/session/location with rank-aware sorting
-- Oral schedule recommendations (topic match + ranking signals)
+- Oral-only location shortcuts, including exclusion of Salle Le Chellah
+- Oral schedule recommendations with two modes: room-based (topic match + ranking signals) and presentation-order-based
 - Posters grouped by date/time and sorted by rank
 - Static 2D embedding projection (precomputed PCA/t-SNE/UMAP)
 - Backend-free `docs/viz` interaction: filtering, search highlight/filter, sampling, nearest neighbors from static artifact
@@ -188,6 +189,7 @@ Required:
 Recommended for scheduling and filtering:
 
 - `Session`, `Room Location`, `Session Date`, `Session time`
+- `Order` (within-session presentation order for Oral Schedule presentation mode)
 - `Type of Presentation`, `Attendance Type`
 - `category_primary`, `category_secondary`, `keywords`
 

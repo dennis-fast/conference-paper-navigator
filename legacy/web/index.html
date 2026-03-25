@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>EACL 2026 Unified Workspace</title>
-  <link rel="stylesheet" href="unified_styles.css" />
+  <link rel="stylesheet" href="unified_styles.css?v=20260325-oral-no-chellah" />
 </head>
 <body>
 <header class="topbar">
@@ -198,8 +198,11 @@
   <section id="tab-schedule" class="tab-panel">
     <section class="panel">
       <div class="panel-row">
-        <div class="h2">Oral Schedule Assistant</div>
-        <div class="small">Recommends primary + backup room per 90-min slot using ranking and embedding topic match (Poster Hall excluded).</div>
+        <div>
+          <div class="h2">Oral Schedule Assistant</div>
+          <div class="small">Shows either top-rated rooms per slot or top-rated presentations by within-session order.</div>
+        </div>
+        <label class="top-filter-check"><input id="scheduleByPresentationOrder" type="checkbox" /> <span>Use top-rated presentation by session order</span></label>
       </div>
       <div id="schedule" class="schedule-root"></div>
     </section>
@@ -216,6 +219,6 @@
   </section>
 </main>
 
-<script type="module" src="unified_app.js"></script>
+<script type="module" src="unified_app.js?v=20260325-schedule-order-fix"></script>
 </body>
 </html>

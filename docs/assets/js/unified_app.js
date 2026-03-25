@@ -28,6 +28,7 @@ function getDefaultState() {
     resolveTieNMatches: "minimal",
     muPriority: "highest",
     winsOnly: false,
+    scheduleByPresentationOrder: false,
   };
 }
 
@@ -155,9 +156,23 @@ function buildRankById() {
   return new Map(all.map((it, idx) => [it.id, idx + 1]));
 }
 
+function formatOrderText(orderText) {
+  const text = String(orderText ?? "").trim();
+  if (!text) return "";
+  const parsed = parseOrderValue(text);
+  if (parsed == null) return text;
+  return String(Math.trunc(parsed));
+}
+
+function resolveOrderText(rec) {
+  const raw = (COL.order ? rec[COL.order] : undefined) ?? rec.Order ?? rec.order ?? rec["Presentation Order"] ?? rec.presentation_order;
+  return formatOrderText(raw);
+}
+
 function hydrateItem(rec) {
   const id = String(rec[COL.id] ?? "").trim();
   const r = getRating(id);
+  const order = resolveOrderText(rec);
   return {
     id,
     title: String(rec[COL.title] ?? ""),
@@ -168,6 +183,8 @@ function hydrateItem(rec) {
     location: COL.location ? String(rec[COL.location] ?? "") : "",
     date: COL.date ? String(rec[COL.date] ?? "") : "",
     time: COL.time ? String(rec[COL.time] ?? "") : "",
+    order,
+    orderNum: parseOrderValue(order),
     cat1: COL.cat1 ? String(rec[COL.cat1] ?? "") : "",
     cat2: COL.cat2 ? String(rec[COL.cat2] ?? "") : "",
     keywords: COL.keywords ? String(rec[COL.keywords] ?? "") : "",
@@ -187,15 +204,19 @@ function rebuildFiltered() {
   const loc = el("locationFilter").value;
   const hasWinsOnly = !!el("hasWinsOnly")?.checked;
   const oralOnlyByLocation = loc === "__oral_only__";
+  const oralOnlyWithoutChellahByLocation = loc === "__oral_only_no_chellah__";
 
   filtered = RAW_RECORDS.map(hydrateItem).filter((it) => {
     if (!it.id) return false;
     if (cat && it.cat1 !== cat && it.cat2 !== cat) return false;
     if (ses && it.session !== ses) return false;
-    if (oralOnlyByLocation) {
+    if (oralOnlyByLocation || oralOnlyWithoutChellahByLocation) {
       const isOral = /\boral\b/i.test(String(it.type ?? ""));
       const isInPerson = String(it.attendanceType ?? "").trim().toLowerCase() === "in-person";
+      const locationNorm = String(it.location ?? "").trim().replace(/\s+/g, " ").toLowerCase();
+      const isLeChellah = locationNorm === "salle le chellah";
       if (!(isOral && isInPerson)) return false;
+      if (oralOnlyWithoutChellahByLocation && isLeChellah) return false;
     } else if (loc && it.location !== loc) {
       return false;
     }
@@ -222,6 +243,12 @@ function isPosterItem(item) {
   return isPosterHallLocation(item?.location) || typeLooksPoster;
 }
 
+function isOralPresentationItem(item) {
+  const typeLooksOral = /\boral\b/i.test(String(item?.type || ""));
+  const inPerson = String(item?.attendanceType || "").trim().toLowerCase() === "in-person";
+  return typeLooksOral && inPerson && !isPosterHallLocation(item?.location);
+}
+
 function safeNumber(value, fallback = 0) {
   const num = Number(value);
   return Number.isFinite(num) ? num : fallback;
@@ -234,6 +261,17 @@ function parseStartMinutes(timeText) {
   const hour = safeNumber(match[1], 99);
   const minute = safeNumber(match[2], 99);
   return hour * 60 + minute;
+}
+
+function parseOrderValue(orderText) {
+  const text = String(orderText || "").trim();
+  if (!text) return null;
+  const direct = Number(text);
+  if (Number.isFinite(direct)) return direct;
+  const match = text.match(/\d+/);
+  if (!match) return null;
+  const parsed = Number(match[0]);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function parseDateSortValue(dateText) {
@@ -364,6 +402,132 @@ function buildScheduleBlocks(items) {
   return [...blocksByKey.values()];
 }
 
+function compareItemsByPreference(a, b) {
+  const muDiff = safeNumber(b.mu, DEFAULT_MU) - safeNumber(a.mu, DEFAULT_MU);
+  if (Math.abs(muDiff) > 1e-9) return muDiff;
+  const winsDiff = safeNumber(b.wins, 0) - safeNumber(a.wins, 0);
+  if (winsDiff !== 0) return winsDiff;
+  return String(a.id || "").localeCompare(String(b.id || ""));
+}
+
+function buildPresentationScheduleSlots(items) {
+  const slotsByKey = new Map();
+
+  items.forEach((it) => {
+    if (it.orderNum == null) return;
+    const date = String(it.date || "(No date)");
+    const time = String(it.time || "(No time)");
+    const slotKey = `${date}|||${time}`;
+
+    if (!slotsByKey.has(slotKey)) {
+      slotsByKey.set(slotKey, { date, time, orders: new Map() });
+    }
+
+    const slot = slotsByKey.get(slotKey);
+    const orderLabel = formatOrderText(it.order || it.orderNum);
+    const orderKey = `${String(it.orderNum).padStart(3, "0")}|||${orderLabel}`;
+    if (!slot.orders.has(orderKey)) {
+      slot.orders.set(orderKey, {
+        orderLabel,
+        orderSort: safeNumber(it.orderNum, Number.MAX_SAFE_INTEGER),
+        papers: [],
+      });
+    }
+    slot.orders.get(orderKey).papers.push(it);
+  });
+
+  return [...slotsByKey.values()].map((slot) => ({
+    date: slot.date,
+    time: slot.time,
+    orders: [...slot.orders.values()].sort((a, b) => {
+      if (a.orderSort !== b.orderSort) return a.orderSort - b.orderSort;
+      return String(a.orderLabel).localeCompare(String(b.orderLabel));
+    }),
+  }));
+}
+
+function renderPresentationScheduleHtml(slots) {
+  const byDate = new Map();
+  slots.forEach((slot) => {
+    if (!byDate.has(slot.date)) byDate.set(slot.date, []);
+    byDate.get(slot.date).push(slot);
+  });
+
+  const dayKeys = [...byDate.keys()].sort((a, b) => {
+    const da = parseDateSortValue(a);
+    const db = parseDateSortValue(b);
+    if (da !== db) return da - db;
+    return a.localeCompare(b);
+  });
+
+  return dayKeys
+    .map((day) => {
+      const daySlots = byDate.get(day).slice().sort((a, b) => {
+        const minuteCmp = parseStartMinutes(a.time) - parseStartMinutes(b.time);
+        if (minuteCmp !== 0) return minuteCmp;
+        return String(a.time).localeCompare(String(b.time));
+      });
+
+      const slotsHtml = daySlots
+        .map((slot) => {
+          const rows = slot.orders
+            .map((group) => {
+              const ranked = group.papers.slice().sort(compareItemsByPreference);
+              const primary = ranked[0] || null;
+              const backup = ranked[1] || null;
+              return `
+                <tr>
+                  <td>${esc(group.orderLabel)}</td>
+                  <td>${esc(primary?.title || primary?.id || "—")}</td>
+                  <td>${esc(primary?.session || "—")}</td>
+                  <td>${esc(primary?.location || "—")}</td>
+                  <td>${primary ? safeNumber(primary.mu, DEFAULT_MU).toFixed(1) : "—"}</td>
+                  <td>${primary ? safeNumber(primary.wins, 0) : "—"}</td>
+                  <td>${esc(backup?.title || backup?.id || "—")}</td>
+                  <td>${esc(backup?.location || "—")}</td>
+                   <td>${backup ? safeNumber(backup.mu, DEFAULT_MU).toFixed(1) : "—"}</td>
+                   <td>${backup ? safeNumber(backup.wins, 0) : "—"}</td>
+                </tr>
+              `;
+            })
+            .join("");
+
+          return `
+            <details class="schedule-slot" open>
+              <summary class="schedule-slot-title">${esc(slot.time)}</summary>
+              <div class="small">Top-rated presentation for each within-session order.</div>
+              <table class="schedule-table">
+                <thead>
+                  <tr>
+                    <th>Order</th>
+                    <th>Top presentation</th>
+                    <th>Session</th>
+                    <th>Room</th>
+                    <th>μ</th>
+                    <th>Wins</th>
+                    <th>Backup presentation</th>
+                    <th>Backup room</th>
+                    <th>Backup μ</th>
+                    <th>Backup Wins</th>
+                  </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+              </table>
+            </details>
+          `;
+        })
+        .join("");
+
+      return `
+        <details class="schedule-day" open>
+          <summary class="schedule-day-head">${esc(day)}</summary>
+          ${slotsHtml}
+        </details>
+      `;
+    })
+    .join("");
+}
+
 async function fetchTopicMatches(blocks) {
   return new Map();
 }
@@ -377,12 +541,26 @@ function renderScheduleEmpty(message) {
 async function renderSchedule() {
   const root = el("schedule");
   if (!root) return;
+  const scheduleByPresentationOrder = !!el("scheduleByPresentationOrder")?.checked;
 
-  const oralItems = filtered.filter((it) => !isPosterHallLocation(it.location));
+  const oralItems = filtered.filter((it) => isOralPresentationItem(it));
 
   if (oralItems.length === 0) {
     renderScheduleEmpty("No oral-schedule records available with the current filters.");
     return;
+  }
+
+  if (scheduleByPresentationOrder) {
+    const orderedItems = oralItems.filter((it) => it.orderNum != null);
+    if (orderedItems.length === 0) {
+      state.scheduleByPresentationOrder = false;
+      if (el("scheduleByPresentationOrder")) el("scheduleByPresentationOrder").checked = false;
+      persistState();
+      root.innerHTML = `<div class="small">No ordered oral-schedule records were found, so the schedule fell back to room-based recommendations.</div>`;
+    } else {
+      root.innerHTML = renderPresentationScheduleHtml(buildPresentationScheduleSlots(orderedItems));
+      return;
+    }
   }
 
   const runId = ++scheduleRenderSeq;
@@ -460,6 +638,8 @@ async function renderSchedule() {
         .map((slot) => {
           const primary = slot.blocks[0];
           const backup = slot.blocks[1] || null;
+          const primaryTopPaper = primary?.topPapers?.[0] || null;
+          const backupTopPaper = backup?.topPapers?.[0] || null;
           const rows = slot.blocks
             .map((block, index) => {
               const topTitles = block.topPapers.map((p) => esc(p.title || p.id)).join(" · ");
@@ -484,12 +664,12 @@ async function renderSchedule() {
                 <div class="schedule-pick">
                   <div class="label">Primary room</div>
                   <div class="room">${esc(primary?.room || "—")}</div>
-                  <div class="meta">Score ${primary ? primary.score.toFixed(3) : "—"} · topic ${primary ? primary.topicMatch.toFixed(3) : "—"}</div>
+                  <div class="meta">Score ${primary ? primary.score.toFixed(3) : "—"} · topic ${primary ? primary.topicMatch.toFixed(3) : "—"} · μ ${primaryTopPaper ? safeNumber(primaryTopPaper.mu, DEFAULT_MU).toFixed(1) : "—"} · wins ${primaryTopPaper ? safeNumber(primaryTopPaper.wins, 0) : "—"}</div>
                 </div>
                 <div class="schedule-pick">
                   <div class="label">Backup room</div>
                   <div class="room">${esc(backup?.room || "—")}</div>
-                  <div class="meta">Score ${backup ? backup.score.toFixed(3) : "—"} · topic ${backup ? backup.topicMatch.toFixed(3) : "—"}</div>
+                  <div class="meta">Score ${backup ? backup.score.toFixed(3) : "—"} · topic ${backup ? backup.topicMatch.toFixed(3) : "—"} · μ ${backupTopPaper ? safeNumber(backupTopPaper.mu, DEFAULT_MU).toFixed(1) : "—"} · wins ${backupTopPaper ? safeNumber(backupTopPaper.wins, 0) : "—"}</div>
                 </div>
               </div>
               <table class="schedule-table">
@@ -934,7 +1114,7 @@ function populateFilters() {
 
   el("categoryFilter").innerHTML = `<option value="">All categories</option>${[...cats].sort().map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}`;
   el("sessionFilter").innerHTML = `<option value="">All sessions</option>${[...sessions].sort().map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("")}`;
-  el("locationFilter").innerHTML = `<option value="">All locations</option>${[...locations].sort().map((l) => `<option value="${esc(l)}">${esc(l)}</option>`).join("")}<option value="__oral_only__">Oral only (in-person)</option>`;
+  el("locationFilter").innerHTML = `<option value="">All locations</option>${[...locations].sort().map((l) => `<option value="${esc(l)}">${esc(l)}</option>`).join("")}<option value="__oral_only__">Oral only (in-person)</option><option value="__oral_only_no_chellah__">Oral only (in-person, no Salle Le Chellah)</option>`;
 }
 
 function loadCSVFromText(text) {
@@ -1071,6 +1251,8 @@ function wireEvents() {
     state.resolveTieNMatches = next.resolveTieNMatches;
     state.muPriority = next.muPriority;
     state.winsOnly = next.winsOnly;
+    state.scheduleByPresentationOrder = next.scheduleByPresentationOrder;
+    if (el("scheduleByPresentationOrder")) el("scheduleByPresentationOrder").checked = !!state.scheduleByPresentationOrder;
     persistState();
     rebuildFiltered();
   });
@@ -1109,6 +1291,11 @@ function wireEvents() {
   el("sessionFilter").addEventListener("change", rebuildFiltered);
   el("locationFilter").addEventListener("change", rebuildFiltered);
   el("hasWinsOnly").addEventListener("change", rebuildFiltered);
+  el("scheduleByPresentationOrder")?.addEventListener("change", (e) => {
+    state.scheduleByPresentationOrder = Boolean(e.target.checked);
+    persistState();
+    void renderSchedule();
+  });
 
   el("mode").addEventListener("change", (e) => {
     state.mode = e.target.value;
@@ -1157,6 +1344,7 @@ async function boot() {
   el("resolveTieNMatches").value = state.resolveTieNMatches || "minimal";
   el("muPriority").value = state.muPriority || "highest";
   el("winsOnly").checked = !!state.winsOnly;
+  if (el("scheduleByPresentationOrder")) el("scheduleByPresentationOrder").checked = !!state.scheduleByPresentationOrder;
 
   try {
     loadCSVFromText(await loadCSVTextFromFetch());
