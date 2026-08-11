@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Conference Paper Navigator</title>
+  <style>
+    :root{color-scheme:dark;--bg:#0b0f17;--card:#111a2a;--line:#26324a;--text:#e9efff;--muted:#94a3c7}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,sans-serif}
+    main{max-width:900px;margin:0 auto;padding:64px 20px}.eyebrow{color:#7dd3fc;text-transform:uppercase;letter-spacing:.13em;font-size:12px;font-weight:800}
+    h1{font-size:clamp(32px,6vw,60px);line-height:1.05;margin:12px 0 16px}.lead{color:var(--muted);font-size:18px;line-height:1.6;max-width:720px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-top:36px}
+    .conference{display:flex;flex-direction:column;gap:10px;padding:20px;border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--text);text-decoration:none}
+    .conference:hover{border-color:#7dd3fc;transform:translateY(-1px)}.conference strong{font-size:21px}.conference span{color:var(--muted);line-height:1.45}.conference small{color:#7dd3fc}
+  </style>
+</head>
+<body><main>
+  <div class="eyebrow">Personal conference planning</div>
+  <h1>Conference Paper Navigator</h1>
+  <p class="lead">Explore accepted papers, learn your preferences through pairwise ranking, inspect semantic neighborhoods, and turn those preferences into an oral and poster plan.</p>
+  <div class="grid">{{CONFERENCE_CARDS}}</div>
+</main></body>
+</html>

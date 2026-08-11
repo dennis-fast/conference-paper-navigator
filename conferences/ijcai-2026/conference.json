@@ -1,0 +1,39 @@
+{
+  "id": "ijcai-2026",
+  "name": "IJCAI-ECAI 2026",
+  "short_name": "IJCAI 2026",
+  "description": "Rank accepted papers, inspect semantic neighborhoods, and plan oral and poster sessions.",
+  "location": "Bremen, Germany",
+  "timezone": "Europe/Berlin",
+  "source": {
+    "adapter": "ijcai_html",
+    "path": "raw/accepted-papers.html",
+    "url": "https://2026.ijcai.org/accepted-papers/",
+    "tracks": {
+      "main-track": "Main Track",
+      "special-track-on-ai-and-health": "Special Track on AI and Health",
+      "special-track-on-ai-and-robotics": "Special Track on AI and Robotics",
+      "special-track-on-ai-and-social-good": "Special Track on AI and Social Good",
+      "special-track-on-ai4tech-ai-enabling-critical-technologies": "Special Track on AI4Tech: AI Enabling Critical Technologies",
+      "special-track-on-human-centred-ai": "Special Track on Human-Centred AI",
+      "journal-track": "Journal Track",
+      "sister-conferences-best-papers-track": "Sister Conferences Best Papers Track",
+      "survey-track": "Survey Track",
+      "early-career-spotlight": "Early Career Spotlight",
+      "demonstrations-track": "Demonstrations Track"
+    }
+  },
+  "features": {
+    "oral_schedule": true,
+    "poster_schedule": true,
+    "presentation_order": false
+  },
+  "projection": {
+    "group_field": "track",
+    "location_field": "oral_room"
+  },
+  "guide": {
+    "conference_dates": "August 18–21, 2026",
+    "notes": "Accepted papers can have both an oral block and a separate poster block. Published schedule fields may be incomplete."
+  }
+}

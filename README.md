@@ -1,221 +1,116 @@
-# EACL 2026 Preference Arena
+# Conference Paper Navigator
 
-Interactive browser app to rank EACL papers, inspect a 2D embedding projection, and build oral/poster schedules.
+A reusable, static-first application for exploring accepted papers, learning personal preferences through pairwise ranking, inspecting semantic neighborhoods, and planning oral and poster sessions.
 
-## Intended use
+The project grew out of the EACL 2026 Preference Arena. Conference-specific source formats are now isolated behind adapters while the browser application operates on one canonical paper-and-presentations schema.
 
-This workspace is designed to help EACL 2026 participants:
+## Included conferences
 
-- explore individual papers in session context,
-- explore clusters of semantically similar papers via embedding projections,
-- learn personal relevance preferences through pairwise ranking,
-- generate a practical in-person oral session plan,
-- produce a ranked poster shortlist to visit.
+- **EACL 2026** — imported from the original program CSV: 703 papers
+- **IJCAI-ECAI 2026** — imported from the public accepted-papers pages: 990 papers across 11 tracks
 
-## Venue structure (as represented in the loaded EACL 2026 program CSV)
+The generated GitHub Pages site presents a conference chooser and a separate state namespace for every conference.
 
-- **Conference days:** Wed. Mar 25, Thur. Mar 26, Fri. Mar 27
-- **Main time blocks:** 09:00–10:30, 11:00–12:30, 11:30–13:00, 14:30–16:00, 16:30–18:00
-- **In-person rooms:** SALLE LE LIXUS, SALLE LE RIAD, SALLE LA PALMERAIE, SALLE WALILI, SALLE Le Chellah, Pavillon DE RABAT
-- **Poster area:** POSTER HALL
-- **Virtual entries:** ZOOM / Attendance Type = Virtual
+## Data model
 
-The app uses this structure to organize papers and to derive planning recommendations per day, session, room, and time slot.
+Ratings belong to papers. Scheduling belongs to presentations:
 
-## Tab-by-tab guide
-
-- **Overview**
-   - Purpose: inspect singular papers in conference context.
-   - View: grouped by Date → Session → Location.
-   - Typical use: scan sessions, then filter/search by topic, session, and location.
-   - Includes: global search, category/session/location filters, wins-only visibility filter, `Oral only (in-person)`, and `Oral only (in-person, no Salle Le Chellah)` shortcuts.
-
-- **2D Embeddings**
-   - Purpose: inspect paper clusters by semantic similarity.
-   - View: precomputed PCA/t-SNE/UMAP projections in static mode.
-   - Typical use: find neighborhoods of related papers, run search highlight/filter, inspect nearest neighbors.
-   - Includes: method switch, projection controls, session/all mode, oral-only shortcut, sampling, CSV export of selected/projected points.
-
-- **Pairwise Ranking**
-   - Purpose: convert your preferences into a personalized ranking.
-   - View: two-paper arena with active/random/bubble/tie-resolution pairing modes.
-   - Typical use: rate pairs quickly and refine the live top-paper list.
-   - Includes: A/B/Strong/Both/Neither/Skip/Undo actions, global pairing priorities (`muPriority`, `resolveTieNMatches`), top-N bubble focus.
-
-- **Oral Schedule**
-   - Purpose: support attendance planning for in-person oral sessions.
-   - View: either room-based recommendations per slot or presentation-based recommendations grouped by within-session order.
-   - Typical use: decide where to go each time block with preference-aware guidance, or compare the best-rated talk for each presentation order across simultaneous sessions.
-   - Includes: slot-level primary + backup room choices, presentation-order mode, and displayed `μ` / `wins` for both primary and backup recommendations.
-
-- **Posters**
-   - Purpose: prioritize poster exploration.
-   - View: poster sessions grouped by date/time with papers sorted by your current rank.
-   - Typical use: create a high-value poster route for your available time.
-   - Includes: rank-first ordering to quickly identify highest-value poster stops.
-
-## Landing page / guide tab
-
-The web app starts with a **How to use** tab that explains:
-
-- intended workflow across all tabs,
-- venue/session structure used for planning,
-- each function in the app including top-bar data/state controls.
-
-## GitHub sharing model
-
-This project is prepared for **GitHub Pages** under:
-
-- `https://dennis-fast.github.io/eacl26-pref-arena/`
-
-The shareable app is served from the `docs/` folder and runs **fully client-side**:
-
-- state is stored in browser `localStorage`
-- exports are downloaded as files (no server-side file writes)
-
-## Project structure
-
-- `docs/` → GitHub Pages publish root
-   - `docs/index.html` → unified app (overview, ranking, oral schedule, posters, embedded viz)
-   - `docs/assets/js/` → client logic + shared modules
-   - `docs/assets/css/` → styles
-   - `docs/viz/` → static 2D projection page
-   - `docs/data/` → static artifacts served in Pages
-- `apps/flask/` → Flask backend app (legacy/server runtime)
-- `legacy/web/` → legacy server-rendered web assets used by Flask
-- `src/web/` → canonical frontend source files
-- `scripts/build/sync_web_assets.py` → publishes `src/web` files into `docs/` and `legacy/web/`
-- `data/raw/` → source datasets and embeddings
-- `data/generated/` → runtime-generated outputs (state/scored CSV)
-- `scripts/`
-   - `scripts/build/` → artifact generation scripts
-   - `scripts/analysis/` → analysis and utility scripts
-- `config/paths.py` → centralized filesystem path constants used by server/build/analysis scripts
-
-## Local preview (Pages-equivalent)
-
-From repo root:
-
-```bash
-python -m http.server 8000
+```text
+Conference
+ └── Paper
+      ├── title, abstract, authors, track, topics
+      └── presentations[]
+           ├── oral
+           ├── poster
+           ├── demo
+           └── other
 ```
 
-Open:
+This supports conferences where a paper appears in both an oral block and a poster block without duplicating its ranking identity.
 
-- `http://localhost:8000/docs/`
+The canonical JSON contract is versioned in `src/pipeline/schema.py`.
 
-Or use:
+## Repository structure
 
-```bash
-make serve-pages
+```text
+conferences/
+  eacl-2026/
+    conference.json       # Branding, source adapter, feature flags
+    raw/                  # Pinned source snapshot
+    data/                 # Normalized papers and embeddings
+  ijcai-2026/
+    conference.json
+    raw/
+    data/
+src/
+  pipeline/
+    adapters/             # Conference-specific ingestion only
+    cli.py                # Fetch, normalize, validate
+    build.py              # Static site and projections
+    schema.py             # Canonical contract
+  web/
+    app/                  # Generic planning application
+    viz/                  # Generic embedding dashboard
+    shared/               # Ranking, pair selection, CSV utilities
+docs/                     # Generated GitHub Pages artifact
+tests/                    # Schema, build, and frontend contracts
 ```
 
-## Regenerate static projection artifact
+## Browser features
 
-When the CSV or embeddings change:
+- paper overview with conference-derived filters
+- pairwise preference ranking with uncertainty-aware Elo updates
+- conference-namespaced browser state, import, and export
+- PCA, t-SNE, and UMAP projections with nearest neighbours
+- oral room recommendations by simultaneous time block
+- optional talk-order comparison when the source publishes presentation order
+- ranked poster and demo priorities
+- scored CSV export
 
-```bash
-python scripts/build/build_static_projection.py
-```
+All personal ranking state remains in the browser. The deployed application has no backend.
 
-This rebuilds:
+## Common commands
 
-- `docs/data/projection_pca.json`
-
-## Sync frontend assets
-
-After editing files in `src/web/`, sync to deploy/runtime folders:
-
-```bash
-python scripts/build/sync_web_assets.py
-```
-
-Or use:
+Create or refresh normalized data:
 
 ```bash
-make sync
+python -m src.pipeline.cli normalize eacl-2026
+python -m src.pipeline.cli fetch ijcai-2026
+python -m src.pipeline.cli normalize ijcai-2026
 ```
 
-## Common developer tasks
+The IJCAI fetch command stores a timestamped source snapshot. Fetching is deliberately separate from CI so a live conference website cannot break deployment reproducibility.
+
+Generate embeddings after normalized papers change:
 
 ```bash
-make build-all       # sync frontend assets + rebuild projection JSON
-make serve-pages     # preview GitHub Pages app
-make serve-flask     # run legacy Flask app
-make smoke-flask     # quick API smoke test
-make test            # run structural + Flask smoke tests
+python scripts/compute_embeddings.py ijcai-2026 --device auto
 ```
 
-## CI
+Build, validate, and preview:
 
-GitHub Actions workflow is defined in [.github/workflows/ci.yml](.github/workflows/ci.yml).
+```bash
+make build-all
+make test
+make serve
+```
 
-On each push/PR it runs:
+Then open `http://localhost:8000/docs/`.
 
-- `make build-all`
-- `make test`
+## Adding another conference
 
-## GitHub Pages deployment
+1. Add `conferences/<conference-id>/conference.json`.
+2. Implement a small adapter under `src/pipeline/adapters/`.
+3. Normalize the source into `data/papers.json`.
+4. Generate `data/embeddings.npz` with matching paper IDs.
+5. Run `make build-all test`.
 
-Deployment workflow is defined in [.github/workflows/pages.yml](.github/workflows/pages.yml).
+Adapters should contain source-specific parsing, not UI behavior. Feature flags in the conference profile indicate whether oral schedules, poster schedules, or explicit presentation order are available.
 
-It runs on pushes to `main` and:
+## Source snapshots
 
-- builds docs via `make build-all`
-- deploys the `docs/` folder to GitHub Pages
+Conference metadata remains attributable to its publisher through `source.url`, per-paper `source_url`, and `raw/source.json`. Refreshing a snapshot may change schedules; ranking state remains stable because it is keyed by conference and paper ID.
 
-Repository settings requirement:
+## Deployment
 
-- Settings → Pages → Build and deployment → Source: **GitHub Actions**
-
-## Main functionality
-
-- Pairwise ranking with uncertainty-aware Elo updates
-- Overview grouped by date/session/location with rank-aware sorting
-- Oral-only location shortcuts, including exclusion of Salle Le Chellah
-- Oral schedule recommendations with two modes: room-based (topic match + ranking signals) and presentation-order-based
-- Posters grouped by date/time and sorted by rank
-- Static 2D embedding projection (precomputed PCA/t-SNE/UMAP)
-- Backend-free `docs/viz` interaction: filtering, search highlight/filter, sampling, nearest neighbors from static artifact
-
-## CSV columns (minimum)
-
-Required:
-
-- `Paper number` (or equivalent ID)
-- `Title`
-- `Abstract`
-
-Recommended for scheduling and filtering:
-
-- `Session`, `Room Location`, `Session Date`, `Session time`
-- `Order` (within-session presentation order for Oral Schedule presentation mode)
-- `Type of Presentation`, `Attendance Type`
-- `category_primary`, `category_secondary`, `keywords`
-
-## Backend-free visualization notes
-
-The visualization page (`docs/viz`) no longer requires `/api/meta`, `/api/project`, or `/api/nn`.
-It loads from:
-
-- `docs/data/projection_pca.json`
-
-The artifact now includes:
-
-- `points_meta`
-- `methods` (`pca`, `tsne`, `umap`)
-- `neighbors`
-- filter/session metadata used by the UI
-
-In Flask mode, static docs data is also served at:
-
-- `/data/<filename>`
-
-which enables unified-app CSV auto-load (`/data/EACL_2026_program_categorized.csv`) without needing GitHub Pages.
-
-## Testing
-
-`make test` uses unittest discovery and runs all `test_*.py` modules under `tests/`, including:
-
-- smoke tests (`tests/test_smoke.py`)
-- static viz contract + integration checks (`tests/test_static_viz_contract.py`)
+GitHub Actions builds every configured conference and deploys `docs/` to GitHub Pages on pushes to `main`.

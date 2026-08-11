@@ -1,0 +1,26 @@
+{
+  "id": "eacl-2026",
+  "name": "EACL 2026",
+  "short_name": "EACL 2026",
+  "description": "Explore papers, learn personal preferences, and plan oral and poster sessions.",
+  "location": "Rabat, Morocco",
+  "timezone": "Africa/Casablanca",
+  "source": {
+    "adapter": "eacl_csv",
+    "path": "raw/program.csv",
+    "url": "https://2026.eacl.org/"
+  },
+  "features": {
+    "oral_schedule": true,
+    "poster_schedule": true,
+    "presentation_order": true
+  },
+  "projection": {
+    "group_field": "primary_category",
+    "location_field": "oral_room"
+  },
+  "guide": {
+    "conference_dates": "March 25–27, 2026",
+    "notes": "The imported program contains oral, poster, demo, in-person, and virtual presentation metadata."
+  }
+}

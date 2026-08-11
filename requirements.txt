@@ -1,6 +1,5 @@
 numpy
-pandas
-flask
 scikit-learn
 umap-learn
-scipy
+beautifulsoup4
+lxml

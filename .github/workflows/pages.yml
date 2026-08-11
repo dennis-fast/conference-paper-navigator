@@ -31,7 +31,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Build docs artifacts
+      - name: Build all conference sites
         run: make build-all
 
       - name: Configure Pages

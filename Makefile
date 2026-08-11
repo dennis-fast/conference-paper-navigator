@@ -1,34 +1,37 @@
 PYTHON ?= python
 PORT ?= 8000
 
-.PHONY: help sync build-projection build-all serve-pages serve-flask smoke-flask test
+.PHONY: help normalize validate build-all test serve fetch-ijcai embed-ijcai
 
 help:
 	@echo "Targets:"
-	@echo "  make sync              - sync src/web -> docs + legacy/web"
-	@echo "  make build-projection  - rebuild docs/data/projection_pca.json"
-	@echo "  make build-all         - sync + build-projection"
-	@echo "  make serve-pages       - local static preview at :$(PORT)"
-	@echo "  make serve-flask       - run Flask legacy backend"
-	@echo "  make smoke-flask       - API smoke test via test client"
-	@echo "  make test              - run smoke tests"
+	@echo "  make normalize    - rebuild normalized conference datasets"
+	@echo "  make validate     - validate canonical datasets"
+	@echo "  make build-all    - build all static conference sites"
+	@echo "  make test         - run contract tests"
+	@echo "  make serve        - preview docs/ at http://localhost:$(PORT)/docs/"
+	@echo "  make fetch-ijcai  - refresh the pinned IJCAI HTML snapshot"
+	@echo "  make embed-ijcai  - regenerate IJCAI SPECTER2 embeddings"
 
-sync:
-	$(PYTHON) scripts/build/sync_web_assets.py
+normalize:
+	$(PYTHON) -m src.pipeline.cli normalize eacl-2026
+	$(PYTHON) -m src.pipeline.cli normalize ijcai-2026
 
-build-projection:
-	$(PYTHON) scripts/build/build_static_projection.py
+validate:
+	$(PYTHON) -m src.pipeline.cli validate eacl-2026
+	$(PYTHON) -m src.pipeline.cli validate ijcai-2026
 
-build-all: sync build-projection
-
-serve-pages:
-	$(PYTHON) -m http.server $(PORT)
-
-serve-flask:
-	$(PYTHON) server.py
-
-smoke-flask:
-	$(PYTHON) -c "from server import app; c=app.test_client(); print('root', c.get('/').status_code); print('meta', c.get('/api/meta').status_code); print('topic', c.post('/api/topic_match', json={'ratings': {}, 'slots': []}).status_code)"
+build-all: validate
+	$(PYTHON) -m src.pipeline.build
 
 test:
 	$(PYTHON) -m unittest discover -s tests -p "test_*.py" -v
+
+serve:
+	$(PYTHON) -m http.server $(PORT)
+
+fetch-ijcai:
+	$(PYTHON) -m src.pipeline.cli fetch ijcai-2026
+
+embed-ijcai:
+	$(PYTHON) scripts/compute_embeddings.py ijcai-2026 --device auto

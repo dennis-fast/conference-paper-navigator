@@ -1,0 +1,202 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #f7f8fa;
+  color: #1b2430;
+}
+
+.app-layout {
+  display: grid;
+  grid-template-columns: 360px 1fr 360px;
+  gap: 12px;
+  height: 100vh;
+  padding: 12px;
+}
+
+.sidebar,
+.main-panel {
+  overflow: auto;
+}
+
+.panel {
+  background: #fff;
+  border: 1px solid #dfe5ec;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+h1 {
+  margin: 0 0 10px;
+  font-size: 1.2rem;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+}
+
+label {
+  display: block;
+  font-size: 0.9rem;
+  margin: 6px 0;
+}
+
+input,
+select,
+button {
+  width: 100%;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid #c9d4df;
+  font-size: 0.9rem;
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  width: auto;
+  margin-right: 6px;
+}
+
+button {
+  background: #1f6feb;
+  border: none;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button.secondary {
+  background: #4c6178;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.button-row {
+  display: flex;
+  gap: 8px;
+  margin: 6px 0;
+}
+
+.button-row button {
+  flex: 1;
+}
+
+.param-group {
+  border: 1px dashed #d0d9e2;
+  border-radius: 6px;
+  padding: 8px;
+  margin-top: 8px;
+}
+
+.hidden {
+  display: none;
+}
+
+#plot {
+  width: 100%;
+  height: 66vh;
+  background: #fff;
+  border: 1px solid #dfe5ec;
+  border-radius: 8px;
+}
+
+.filter-group {
+  border-top: 1px solid #edf2f7;
+  padding-top: 8px;
+  margin-top: 8px;
+}
+
+.filter-values {
+  max-height: 150px;
+  overflow-y: auto;
+  border: 1px solid #edf2f7;
+  border-radius: 6px;
+  padding: 6px;
+}
+
+.filter-value {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0;
+}
+
+.filter-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.filter-actions button {
+  font-size: 0.8rem;
+  padding: 4px 6px;
+}
+
+#selection-table,
+#nn-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+#selection-table th,
+#selection-table td,
+#nn-table th,
+#nn-table td {
+  border-bottom: 1px solid #e7edf4;
+  text-align: left;
+  padding: 4px 6px;
+  vertical-align: top;
+}
+
+#selection-table th {
+  cursor: pointer;
+}
+
+.selection-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.selection-header button {
+  width: auto;
+}
+
+#status-line {
+  font-size: 0.9rem;
+  margin-top: 8px;
+}
+
+#stats-line {
+  font-size: 0.82rem;
+  color: #4c6178;
+  margin-top: 4px;
+}
+
+@media (max-width: 1500px) {
+  .app-layout {
+    grid-template-columns: 320px 1fr 320px;
+  }
+}
+
+@media (max-width: 1200px) {
+  .app-layout {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  #plot {
+    height: 55vh;
+  }
+}

@@ -7,8 +7,8 @@ __pycache__/
 .DS_Store
 
 # Generated exports from UI
-data/generated/EACL_2026_program_scored.csv
-data/generated/eacl_pref_state.json
+*-scored.csv
+*-state.json
 
 # Optional local artifacts
 *.log

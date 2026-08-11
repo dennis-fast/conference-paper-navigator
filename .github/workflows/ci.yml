@@ -23,8 +23,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Build static artifacts
+      - name: Build static conference sites
         run: make build-all
 
-      - name: Run smoke tests
+      - name: Run contract tests
         run: make test
