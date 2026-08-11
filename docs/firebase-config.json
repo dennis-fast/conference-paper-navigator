@@ -1,0 +1,11 @@
+{
+  "enabled": true,
+  "firebase": {
+    "apiKey": "AIzaSyDPivnyShtPmzbBemkiNyxkpRO_44HL8vs",
+    "authDomain": "conference-paper-navigator.firebaseapp.com",
+    "projectId": "conference-paper-navigator",
+    "storageBucket": "conference-paper-navigator.firebasestorage.app",
+    "messagingSenderId": "655912241197",
+    "appId": "1:655912241197:web:39133f83134e084be110a4"
+  }
+}

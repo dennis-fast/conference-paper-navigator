@@ -1,9 +1,14 @@
 import { toCSV } from "./csv.js";
 import { DEFAULT_MU, DEFAULT_SIGMA, MIN_SIGMA, SIGMA_DECAY, updatePair } from "./rating.js";
 import { chooseNextPair } from "./selector.js";
+import { initializeCloudSync } from "./cloud-sync.js";
+import { mergeComparisonData } from "./merge-comparisons.js";
 
 const BASE_K = 32;
 const JOINT_FEEDBACK_SCALE = 0.45;
+const STATE_EXPORT_TYPE = "conference-paper-navigator-state";
+const STATE_EXPORT_VERSION = 1;
+const DEFAULT_RATING = Object.freeze({ mu: DEFAULT_MU, sigma: DEFAULT_SIGMA, n: 0, wins: 0, losses: 0, ties: 0 });
 
 let config = null;
 let dataset = null;
@@ -11,6 +16,8 @@ let papers = [];
 let filtered = [];
 let currentPair = null;
 let state = null;
+let activeUserId = null;
+let cloudSync = null;
 
 const el = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? "")
@@ -20,8 +27,18 @@ const esc = (value) => String(value ?? "")
   .replaceAll('"', "&quot;")
   .replaceAll("'", "&#039;");
 
-function stateKey() {
+function guestStateKey() {
   return `conference-paper-navigator:${config.id}:ratings:v1`;
+}
+
+function guestOwnerKey() {
+  return `conference-paper-navigator:${config.id}:guest-owner:v1`;
+}
+
+function stateKey() {
+  return activeUserId
+    ? `conference-paper-navigator:${config.id}:user:${activeUserId}:ratings:v1`
+    : guestStateKey();
 }
 
 function defaultState() {
@@ -30,6 +47,9 @@ function defaultState() {
     conference_id: config.id,
     ratings: {},
     history: [],
+    history_tombstones: [],
+    reset_at: "",
+    modified_at: "",
     lastPair: [],
     mode: "active",
     topN: 60,
@@ -40,32 +60,126 @@ function defaultState() {
   };
 }
 
-function normalizeState(value) {
-  if (!value || typeof value !== "object" || !value.ratings) return null;
-  if (value.conference_id && value.conference_id !== config.id) {
-    throw new Error(`This state belongs to ${value.conference_id}, not ${config.id}.`);
+function isRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function stableHistoryId(entry, index) {
+  if (entry.id) return String(entry.id);
+  const text = [entry.a, entry.b, entry.outcome, entry.choice, entry.kMult, entry.ts, index].join("|");
+  let hash = 2166136261;
+  for (let offset = 0; offset < text.length; offset += 1) {
+    hash ^= text.charCodeAt(offset);
+    hash = Math.imul(hash, 16777619);
   }
+  return `legacy-${(hash >>> 0).toString(16)}`;
+}
+
+function normalizeState(value) {
+  if (!isRecord(value)) throw new Error("The ranking state must be a JSON object.");
+  if (value.schema_version != null && Number(value.schema_version) !== 1) {
+    throw new Error(`Unsupported ranking schema version: ${value.schema_version}.`);
+  }
+  if (value.conference_id && value.conference_id !== config.id) {
+    throw new Error(`This backup belongs to ${value.conference_id}, not ${config.id}.`);
+  }
+  if (!isRecord(value.ratings)) throw new Error("The backup has no valid ratings object.");
+
+  const ratingDefaults = { mu: DEFAULT_MU, sigma: DEFAULT_SIGMA, n: 0, wins: 0, losses: 0, ties: 0 };
+  const ratings = {};
+  for (const [paperId, rawRating] of Object.entries(value.ratings)) {
+    if (!isRecord(rawRating)) throw new Error(`The rating for paper ${paperId} is invalid.`);
+    const rating = {};
+    for (const [field, fallback] of Object.entries(ratingDefaults)) {
+      const number = rawRating[field] == null ? fallback : Number(rawRating[field]);
+      if (!Number.isFinite(number)) throw new Error(`The ${field} value for paper ${paperId} is invalid.`);
+      if (field === "sigma" && number <= 0) throw new Error(`The sigma value for paper ${paperId} must be positive.`);
+      if (["n", "wins", "losses", "ties"].includes(field) && (!Number.isInteger(number) || number < 0)) {
+        throw new Error(`The ${field} value for paper ${paperId} must be a non-negative integer.`);
+      }
+      rating[field] = number;
+    }
+    if (rating.n === 0 && rating.wins === 0 && rating.losses === 0 && rating.ties === 0
+        && rating.mu === DEFAULT_MU && rating.sigma === DEFAULT_SIGMA) continue;
+    ratings[String(paperId)] = rating;
+  }
+
+  if (value.history != null && !Array.isArray(value.history)) throw new Error("The comparison history is invalid.");
+  const choices = new Set(["A", "STRONG_A", "B", "STRONG_B", "BOTH", "NEITHER", "SKIP"]);
+  const history = (value.history || []).map((entry, index) => {
+    if (!isRecord(entry) || !entry.a || !entry.b || !choices.has(entry.choice)) {
+      throw new Error(`Comparison ${index + 1} is invalid.`);
+    }
+    const outcome = entry.outcome == null ? null : Number(entry.outcome);
+    const kMult = Number(entry.kMult);
+    if ((outcome != null && (!Number.isFinite(outcome) || outcome < 0 || outcome > 1)) || !Number.isFinite(kMult) || kMult < 0) {
+      throw new Error(`Comparison ${index + 1} has invalid scoring values.`);
+    }
+    return { id: stableHistoryId(entry, index), a: String(entry.a), b: String(entry.b), outcome, choice: entry.choice, kMult, ts: String(entry.ts || "") };
+  });
+
+  const defaults = defaultState();
+  const modes = new Set(["active", "random", "bubble", "resolve_ties"]);
+  const matchModes = new Set(["minimal", "random", "maximal"]);
+  const priorities = new Set(["highest", "lowest", "random"]);
+  const topN = Number(value.topN);
   return {
-    ...defaultState(),
-    ...value,
-    schema_version: 1,
-    conference_id: config.id,
-    history: Array.isArray(value.history) ? value.history : [],
+    ...defaults,
+    ratings,
+    history,
+    history_tombstones: Array.isArray(value.history_tombstones) ? [...new Set(value.history_tombstones.map(String))].sort() : [],
+    reset_at: typeof value.reset_at === "string" ? value.reset_at : "",
+    modified_at: typeof value.modified_at === "string" ? value.modified_at : "",
+    lastPair: Array.isArray(value.lastPair) ? value.lastPair.slice(0, 2) : [],
+    mode: modes.has(value.mode) ? value.mode : defaults.mode,
+    topN: Number.isInteger(topN) && topN >= 10 && topN <= 500 ? topN : defaults.topN,
+    resolveTieNMatches: matchModes.has(value.resolveTieNMatches) ? value.resolveTieNMatches : defaults.resolveTieNMatches,
+    muPriority: priorities.has(value.muPriority) ? value.muPriority : defaults.muPriority,
+    winsOnly: Boolean(value.winsOnly),
+    scheduleByPresentationOrder: Boolean(value.scheduleByPresentationOrder),
   };
 }
 
-function loadState() {
-  const raw = localStorage.getItem(stateKey());
+function createStateBackup() {
+  return {
+    type: STATE_EXPORT_TYPE,
+    export_version: STATE_EXPORT_VERSION,
+    exported_at: new Date().toISOString(),
+    conference: { id: config.id, name: config.name },
+    summary: {
+      comparisons: state.history.length,
+      rated_papers: Object.values(state.ratings).filter((rating) => Number(rating.n) > 0).length,
+    },
+    state,
+  };
+}
+
+function parseStateBackup(value) {
+  if (isRecord(value) && value.type === STATE_EXPORT_TYPE) {
+    if (Number(value.export_version) !== STATE_EXPORT_VERSION) {
+      throw new Error(`Unsupported backup format version: ${value.export_version}.`);
+    }
+    return normalizeState(value.state);
+  }
+  // Backward compatibility with state files exported before backup metadata was added.
+  return normalizeState(value);
+}
+
+function loadStateFromKey(key) {
+  const raw = localStorage.getItem(key);
   if (!raw) return defaultState();
   try {
-    return normalizeState(JSON.parse(raw)) ?? defaultState();
+    return normalizeState(JSON.parse(raw));
   } catch {
     return defaultState();
   }
 }
 
-function persistState() {
-  localStorage.setItem(stateKey(), JSON.stringify(state));
+function loadState() {
+  return loadStateFromKey(stateKey());
+}
+
+function notifyVisualization() {
   const frame = el("vizFrame");
   frame?.contentWindow?.postMessage(
     { type: "ranking_state_update", payload: { key: stateKey(), ratings: state.ratings } },
@@ -73,15 +187,26 @@ function persistState() {
   );
 }
 
-function getRating(id) {
-  if (!state.ratings[id]) {
-    state.ratings[id] = { mu: DEFAULT_MU, sigma: DEFAULT_SIGMA, n: 0, wins: 0, losses: 0, ties: 0 };
+function persistState({ touch = true, sync = true } = {}) {
+  if (touch) state.modified_at = new Date().toISOString();
+  localStorage.setItem(stateKey(), JSON.stringify(state));
+  notifyVisualization();
+  if (sync) cloudSync?.scheduleSave(state);
+}
+
+function getRatingFrom(target, id) {
+  if (!target.ratings[id]) {
+    target.ratings[id] = { ...DEFAULT_RATING };
   }
-  const rating = state.ratings[id];
+  const rating = target.ratings[id];
   for (const [key, fallback] of Object.entries({ mu: DEFAULT_MU, sigma: DEFAULT_SIGMA, n: 0, wins: 0, losses: 0, ties: 0 })) {
     if (!Number.isFinite(Number(rating[key]))) rating[key] = fallback;
   }
   return rating;
+}
+
+function readRating(id) {
+  return state.ratings[id] || DEFAULT_RATING;
 }
 
 function presentationsOf(paper, type) {
@@ -97,7 +222,7 @@ function primaryPresentation(paper) {
 }
 
 function hydrate(paper) {
-  const rating = getRating(String(paper.id));
+  const rating = readRating(String(paper.id));
   const oral = firstPresentation(paper, "oral");
   const poster = firstPresentation(paper, "poster");
   const primary = primaryPresentation(paper);
@@ -246,10 +371,10 @@ function applyJoint(rating, direction, multiplier) {
   rating.n += 1;
 }
 
-function applyHistoryEntry(entry) {
+function applyHistoryEntry(entry, target = state) {
   if (entry.outcome == null) return;
-  const a = getRating(entry.a);
-  const b = getRating(entry.b);
+  const a = getRatingFrom(target, entry.a);
+  const b = getRatingFrom(target, entry.b);
   if (entry.choice === "BOTH") {
     applyJoint(a, 1, entry.kMult); applyJoint(b, 1, entry.kMult);
   } else if (entry.choice === "NEITHER") {
@@ -260,6 +385,32 @@ function applyHistoryEntry(entry) {
   applyCounters(a, b, entry.outcome);
 }
 
+function rebuildRatings(target) {
+  const rebuilt = { ...target, ratings: {}, history: [] };
+  for (const entry of target.history) {
+    applyHistoryEntry(entry, rebuilt);
+    rebuilt.history.push(entry);
+  }
+  return rebuilt;
+}
+
+function mergeStates(first, second) {
+  const local = normalizeState(first);
+  const remote = normalizeState(second);
+  const merged = mergeComparisonData(local, remote);
+  return rebuildRatings({
+    ...(merged.localIsNewer ? local : remote),
+    history: merged.history,
+    history_tombstones: merged.history_tombstones,
+    reset_at: merged.reset_at,
+    modified_at: merged.localIsNewer ? local.modified_at : remote.modified_at,
+  });
+}
+
+function createHistoryId() {
+  return globalThis.crypto?.randomUUID?.() || `comparison-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 function vote(choice) {
   if (!currentPair) return;
   const choices = {
@@ -267,7 +418,7 @@ function vote(choice) {
     BOTH: [0.5, 0.8], NEITHER: [0.5, 1.2], SKIP: [null, 0],
   };
   const [outcome, kMult] = choices[choice];
-  const entry = { a: currentPair.A.id, b: currentPair.B.id, outcome, choice, kMult, ts: new Date().toISOString() };
+  const entry = { id: createHistoryId(), a: currentPair.A.id, b: currentPair.B.id, outcome, choice, kMult, ts: new Date().toISOString() };
   applyHistoryEntry(entry);
   state.history.push(entry);
   persistState();
@@ -276,13 +427,13 @@ function vote(choice) {
 
 function undo() {
   if (!state.history.length) return;
+  const removed = state.history.at(-1);
   const history = state.history.slice(0, -1);
-  state.ratings = {};
-  state.history = [];
-  for (const entry of history) {
-    applyHistoryEntry(entry);
-    state.history.push(entry);
-  }
+  state = rebuildRatings({
+    ...state,
+    history,
+    history_tombstones: [...new Set([...state.history_tombstones, removed.id])],
+  });
   persistState();
   rebuildFiltered();
 }
@@ -408,11 +559,39 @@ function download(filename, content, mime) {
   anchor.href = url; anchor.download = filename; document.body.appendChild(anchor); anchor.click(); anchor.remove(); URL.revokeObjectURL(url);
 }
 
+function exportStateBackup() {
+  const date = new Date().toISOString().slice(0, 10);
+  download(`${config.id}-rankings-${date}.json`, JSON.stringify(createStateBackup(), null, 2), "application/json");
+  showMessage(`Exported ${state.history.length} comparisons. Keep the JSON file as your ranking backup.`);
+}
+
+async function importStateBackup(file) {
+  if (!file) return;
+  const imported = parseStateBackup(JSON.parse(await file.text()));
+  const rated = Object.values(imported.ratings).filter((rating) => Number(rating.n) > 0).length;
+  const prompt = `Import ${imported.history.length} comparisons and ${rated} rated papers for ${config.short_name}? This replaces the rankings currently stored in this browser.`;
+  if (!confirm(prompt)) return;
+  const importedIds = new Set(imported.history.map((entry) => entry.id));
+  const replacedIds = state.history.map((entry) => entry.id).filter((id) => !importedIds.has(id));
+  const inheritedTombstones = [...state.history_tombstones, ...replacedIds].filter((id) => !importedIds.has(id));
+  const restoredAt = Date.now();
+  state = rebuildRatings({
+    ...imported,
+    history: imported.history.map((entry, index) => ({ ...entry, ts: new Date(restoredAt + index).toISOString() })),
+    history_tombstones: [...new Set([...imported.history_tombstones, ...inheritedTombstones])],
+    reset_at: state.reset_at,
+  });
+  syncControls();
+  persistState();
+  rebuildFiltered();
+  showMessage(`Imported ${state.history.length} comparisons and ${rated} rated papers.`);
+}
+
 function exportCSV() {
   const ranked = papers.map(hydrate).sort(comparePapers); const rank = new Map(ranked.map((paper, index) => [paper.id, index + 1]));
   const headers = ["paper_id", "title", "authors", "track", "primary_category", "secondary_category", "presentations", "pref_mu", "pref_sigma", "pref_rank", "n_matches", "wins", "losses", "ties"];
   const records = papers.map((paper) => {
-    const rating = getRating(String(paper.id));
+    const rating = readRating(String(paper.id));
     return { paper_id: paper.id, title: paper.title, authors: (paper.authors || []).join("; "), track: paper.track || "", primary_category: paper.primary_category || "", secondary_category: paper.secondary_category || "", presentations: (paper.presentations || []).map(presentationLabel).join(" | "), pref_mu: rating.mu, pref_sigma: rating.sigma, pref_rank: rank.get(String(paper.id)), n_matches: rating.n, wins: rating.wins, losses: rating.losses, ties: rating.ties };
   });
   download(`${config.id}-scored.csv`, toCSV(headers, records), "text/csv");
@@ -421,7 +600,10 @@ function exportCSV() {
 function activateTab(tab) {
   document.querySelectorAll(".tab").forEach((button) => button.classList.toggle("active", button.dataset.tab === tab));
   document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `tab-${tab}`));
-  if (tab === "viz") el("vizFrame")?.contentWindow?.postMessage({ type: "viz_resize" }, window.location.origin);
+  if (tab === "viz") {
+    notifyVisualization();
+    el("vizFrame")?.contentWindow?.postMessage({ type: "viz_resize" }, window.location.origin);
+  }
 }
 
 function wireEvents() {
@@ -434,10 +616,24 @@ function wireEvents() {
   el("scheduleByPresentationOrder").addEventListener("change", () => { state.scheduleByPresentationOrder = el("scheduleByPresentationOrder").checked; persistState(); renderOralSchedule(); });
   document.querySelectorAll("[data-vote]").forEach((button) => button.addEventListener("click", () => vote(button.dataset.vote)));
   el("btnUndo").addEventListener("click", undo);
-  el("btnReset").addEventListener("click", () => { if (!confirm(`Reset all ${config.short_name} ratings and history?`)) return; localStorage.removeItem(stateKey()); state = defaultState(); syncControls(); persistState(); rebuildFiltered(); });
-  el("btnExportState").addEventListener("click", () => download(`${config.id}-state.json`, JSON.stringify(state, null, 2), "application/json"));
+  el("btnReset").addEventListener("click", () => {
+    if (!confirm(`Reset all ${config.short_name} ratings and history?`)) return;
+    const resetAt = new Date().toISOString();
+    const tombstones = [...new Set([...state.history_tombstones, ...state.history.map((entry) => entry.id)])];
+    state = { ...defaultState(), history_tombstones: tombstones, reset_at: resetAt };
+    syncControls(); persistState(); rebuildFiltered();
+  });
+  el("btnExportState").addEventListener("click", exportStateBackup);
   el("btnExportCSV").addEventListener("click", exportCSV);
-  el("stateFile").addEventListener("change", async (event) => { try { state = normalizeState(JSON.parse(await event.target.files[0].text())); syncControls(); persistState(); rebuildFiltered(); } catch (error) { showError(error.message); } });
+  el("stateFile").addEventListener("change", async (event) => {
+    try {
+      await importStateBackup(event.target.files?.[0]);
+    } catch (error) {
+      showError(`Could not import rankings: ${error.message}`);
+    } finally {
+      event.target.value = "";
+    }
+  });
   el("datasetFile").addEventListener("change", async (event) => { try { const value = JSON.parse(await event.target.files[0].text()); if (value.conference_id !== config.id || !Array.isArray(value.papers)) throw new Error("Dataset conference or schema does not match."); dataset = value; papers = value.papers; populateFilters(); rebuildFiltered(); } catch (error) { showError(error.message); } });
 }
 
@@ -446,7 +642,88 @@ function syncControls() {
   el("winsOnly").checked = state.winsOnly; el("topN").value = state.topN; el("scheduleByPresentationOrder").checked = state.scheduleByPresentationOrder;
 }
 
-function showError(message) { el("errors").textContent = message; }
+function showMessage(message, kind = "success") {
+  const output = el("errors");
+  output.textContent = message;
+  output.dataset.kind = kind;
+}
+
+function showError(message) { showMessage(message, "error"); }
+
+function refreshStateUI() {
+  syncControls();
+  rebuildFiltered();
+}
+
+function stateHasRankings(value) {
+  return value.history.length > 0 || Object.values(value.ratings).some((rating) => Number(rating.n) > 0);
+}
+
+function changeCloudUser(user) {
+  const previousUserId = activeUserId;
+  const previousState = state;
+  if (!user) {
+    activeUserId = null;
+    if (previousUserId) {
+      // Keep the latest account state usable on this device after sign-out.
+      state = normalizeState(previousState);
+      localStorage.setItem(guestStateKey(), JSON.stringify(state));
+      localStorage.setItem(guestOwnerKey(), previousUserId);
+      notifyVisualization();
+    } else {
+      state = loadState();
+    }
+    refreshStateUI();
+    return structuredClone(state);
+  }
+
+  const guestState = previousUserId ? loadStateFromKey(guestStateKey()) : previousState;
+  const guestOwner = localStorage.getItem(guestOwnerKey());
+  activeUserId = user.uid;
+  if (localStorage.getItem(stateKey())) {
+    const accountState = loadState();
+    state = guestOwner === user.uid ? mergeStates(accountState, guestState) : accountState;
+    persistState({ touch: false, sync: false });
+  } else if (guestOwner === user.uid) {
+    state = normalizeState(guestState);
+    persistState({ touch: false, sync: false });
+  } else if (!guestOwner && stateHasRankings(guestState) && confirm(`Import this browser's ${guestState.history.length} guest comparisons into ${user.email || "your account"}?`)) {
+    state = normalizeState(guestState);
+    localStorage.setItem(guestOwnerKey(), user.uid);
+    persistState({ touch: true, sync: false });
+  } else {
+    state = defaultState();
+    persistState({ touch: false, sync: false });
+  }
+  refreshStateUI();
+  return structuredClone(state);
+}
+
+function applyCloudState(value) {
+  state = normalizeState(value);
+  persistState({ touch: false, sync: false });
+  refreshStateUI();
+}
+
+async function startCloudSync() {
+  try {
+    cloudSync = await initializeCloudSync({
+      configUrl: "../firebase-config.json",
+      conferenceId: config.id,
+      signInButton: el("btnSignIn"),
+      signOutButton: el("btnSignOut"),
+      statusElement: el("cloudStatus"),
+      getState: () => structuredClone(state),
+      mergeStates,
+      applyState: applyCloudState,
+      onUserChanged: changeCloudUser,
+      onError: showError,
+    });
+  } catch (error) {
+    el("cloudStatus").textContent = "Cloud sync unavailable";
+    showError(`Could not start cloud sync: ${error.message}`);
+  }
+}
 
 async function initialize() {
   try {
@@ -454,6 +731,7 @@ async function initialize() {
     if (!configResponse.ok || !dataResponse.ok) throw new Error("Could not load conference data.");
     config = await configResponse.json(); dataset = await dataResponse.json(); papers = dataset.papers || [];
     state = loadState(); applyConfiguration(); wireEvents(); syncControls(); populateFilters(); rebuildFiltered();
+    await startCloudSync();
   } catch (error) { showError(error.message || String(error)); }
 }
 

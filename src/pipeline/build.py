@@ -140,6 +140,9 @@ def build_conference(conference_id: str) -> None:
     for source, target in [
         (WEB_DIR / "app" / "index.html", destination / "index.html"),
         (WEB_DIR / "app" / "app.js", destination / "assets" / "js" / "app.js"),
+        (WEB_DIR / "app" / "cloud-sync.js", destination / "assets" / "js" / "cloud-sync.js"),
+        (WEB_DIR / "app" / "merge-comparisons.js", destination / "assets" / "js" / "merge-comparisons.js"),
+        (WEB_DIR / "app" / "sync-fingerprint.js", destination / "assets" / "js" / "sync-fingerprint.js"),
         (WEB_DIR / "app" / "styles.css", destination / "assets" / "css" / "styles.css"),
         (WEB_DIR / "shared" / "rating.js", destination / "assets" / "js" / "rating.js"),
         (WEB_DIR / "shared" / "selector.js", destination / "assets" / "js" / "selector.js"),
@@ -168,6 +171,7 @@ def build_landing(ids: list[str]) -> None:
     template = (WEB_DIR / "landing.html").read_text(encoding="utf-8")
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
     (DOCS_DIR / "index.html").write_text(template.replace("{{CONFERENCE_CARDS}}", "\n".join(cards)), encoding="utf-8")
+    _copy(WEB_DIR / "firebase-config.json", DOCS_DIR / "firebase-config.json")
     (DOCS_DIR / ".nojekyll").write_text("", encoding="utf-8")
 
 

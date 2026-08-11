@@ -16,6 +16,7 @@ code{background:rgba(255,255,255,.08);padding:2px 6px;border-radius:8px}
 .title .sub{color:var(--muted);font-size:13px;margin-top:4px}
 .back-link{display:inline-block;color:#7dd3fc;text-decoration:none;font-size:12px;margin-bottom:4px}
 .controls{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}
+.cloud-status{align-self:center;color:var(--muted);font-size:12px;max-width:240px}
 .btn{
   background:var(--chip);color:var(--text);
   border:1px solid var(--line);border-radius:10px;padding:8px 12px;
@@ -24,6 +25,7 @@ code{background:rgba(255,255,255,.08);padding:2px 6px;border-radius:8px}
 .btn:hover{filter:brightness(1.08)}
 .btn input{display:none}
 .btn.secondary{opacity:.9;font-weight:700}
+.btn.cloud{border-color:#2563eb;background:#172554}
 .wrap{max-width:1300px;margin:0 auto;padding:14px}
 .panel{background:var(--card2);border:1px solid var(--line);border-radius:14px;padding:12px;margin-bottom:12px}
 .panel-row{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between}
@@ -75,7 +77,8 @@ code{background:rgba(255,255,255,.08);padding:2px 6px;border-radius:8px}
   white-space:nowrap;
 }
 .hint{margin-top:10px;color:var(--muted);font-size:13px}
-.errors{margin-top:10px;color:#ffd6e2}
+.errors{margin-top:10px;color:#86efac}
+.errors[data-kind="error"]{color:#ffd6e2}
 .small{color:var(--muted);font-size:12px}
 .guide-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px;margin-top:16px}
 .guide-grid>div{display:flex;flex-direction:column;gap:6px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--card)}
