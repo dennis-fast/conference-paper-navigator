@@ -76,6 +76,20 @@ Use **Export rankings** to download a JSON backup containing the conference ID, 
 
 The scored CSV is useful for analysis, but it is not a restorable backup because it does not contain comparison history. Browser storage is isolated by site origin, device, and browser profile, so export periodically if cloud sync is not configured.
 
+Ranking backups may also contain uncertain `priors`. Priors initialize the ordering without counting papers as reviewed; real pairwise votes update them normally. To transfer preferences between conferences that use the same embedding model:
+
+```bash
+python scripts/transfer_ranking_priors.py \
+  eacl-rankings.json \
+  conferences/eacl-2026/data/embeddings.npz \
+  conferences/ijcai-2026/data/embeddings.npz \
+  ijcai-priors.json \
+  --conference-id ijcai-2026 \
+  --conference-name "IJCAI-ECAI 2026"
+```
+
+The transfer blends ridge regression with distance-weighted semantic neighbours. It is intended to reduce cold-start work, not to replace reviewing the target conference.
+
 ## Optional cloud synchronization
 
 The static app supports Google sign-in and Firestore without operating a custom server. Each conference state is stored at `users/{uid}/conferences/{conferenceId}` and protected by rules that compare the path UID with the authenticated user's UID. Comparison histories are merged transactionally using stable event IDs; undo and reset markers prevent removed comparisons from returning during a merge.

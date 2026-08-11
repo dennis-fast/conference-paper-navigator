@@ -45,6 +45,7 @@ function defaultState() {
   return {
     schema_version: 1,
     conference_id: config.id,
+    priors: {},
     ratings: {},
     history: [],
     history_tombstones: [],
@@ -86,6 +87,17 @@ function normalizeState(value) {
   if (!isRecord(value.ratings)) throw new Error("The backup has no valid ratings object.");
 
   const ratingDefaults = { mu: DEFAULT_MU, sigma: DEFAULT_SIGMA, n: 0, wins: 0, losses: 0, ties: 0 };
+  if (value.priors != null && !isRecord(value.priors)) throw new Error("The ranking priors are invalid.");
+  const priors = {};
+  for (const [paperId, rawPrior] of Object.entries(value.priors || {})) {
+    if (!isRecord(rawPrior)) throw new Error(`The prior for paper ${paperId} is invalid.`);
+    const mu = Number(rawPrior.mu);
+    const sigma = Number(rawPrior.sigma);
+    if (!Number.isFinite(mu) || !Number.isFinite(sigma) || sigma <= 0) {
+      throw new Error(`The prior for paper ${paperId} has invalid scoring values.`);
+    }
+    priors[String(paperId)] = { mu, sigma };
+  }
   const ratings = {};
   for (const [paperId, rawRating] of Object.entries(value.ratings)) {
     if (!isRecord(rawRating)) throw new Error(`The rating for paper ${paperId} is invalid.`);
@@ -125,6 +137,7 @@ function normalizeState(value) {
   const topN = Number(value.topN);
   return {
     ...defaults,
+    priors,
     ratings,
     history,
     history_tombstones: Array.isArray(value.history_tombstones) ? [...new Set(value.history_tombstones.map(String))].sort() : [],
@@ -149,6 +162,7 @@ function createStateBackup() {
     summary: {
       comparisons: state.history.length,
       rated_papers: Object.values(state.ratings).filter((rating) => Number(rating.n) > 0).length,
+      prior_papers: Object.keys(state.priors).length,
     },
     state,
   };
@@ -182,7 +196,7 @@ function loadState() {
 function notifyVisualization() {
   const frame = el("vizFrame");
   frame?.contentWindow?.postMessage(
-    { type: "ranking_state_update", payload: { key: stateKey(), ratings: state.ratings } },
+    { type: "ranking_state_update", payload: { key: stateKey(), ratings: effectiveRatings(state) } },
     window.location.origin,
   );
 }
@@ -196,7 +210,7 @@ function persistState({ touch = true, sync = true } = {}) {
 
 function getRatingFrom(target, id) {
   if (!target.ratings[id]) {
-    target.ratings[id] = { ...DEFAULT_RATING };
+    target.ratings[id] = { ...DEFAULT_RATING, ...(target.priors?.[id] || {}) };
   }
   const rating = target.ratings[id];
   for (const [key, fallback] of Object.entries({ mu: DEFAULT_MU, sigma: DEFAULT_SIGMA, n: 0, wins: 0, losses: 0, ties: 0 })) {
@@ -206,7 +220,15 @@ function getRatingFrom(target, id) {
 }
 
 function readRating(id) {
-  return state.ratings[id] || DEFAULT_RATING;
+  return state.ratings[id] || (state.priors[id] ? { ...DEFAULT_RATING, ...state.priors[id] } : DEFAULT_RATING);
+}
+
+function effectiveRatings(target) {
+  const ratings = {};
+  for (const [paperId, prior] of Object.entries(target.priors || {})) {
+    ratings[paperId] = { ...DEFAULT_RATING, ...prior };
+  }
+  return { ...ratings, ...target.ratings };
 }
 
 function presentationsOf(paper, type) {
@@ -296,6 +318,7 @@ function renderStats() {
     ["Filtered", filtered.length],
     ["Comparisons", state.history.length],
     ["Rated", Object.values(state.ratings).filter((rating) => Number(rating.n) > 0).length],
+    ["Predicted", Object.keys(state.priors).length],
   ].map(([label, value]) => `<span class="pill">${label}: <b>${value}</b></span>`).join("");
 }
 
@@ -366,7 +389,11 @@ function applyCounters(a, b, outcome) {
 }
 
 function applyJoint(rating, direction, multiplier) {
-  rating.mu += direction * BASE_K * JOINT_FEEDBACK_SCALE * multiplier;
+  // Keep joint feedback uncertainty-aware, just like pairwise Elo updates.
+  // This also preserves scores when replaying ranking histories exported by
+  // the original EACL preference arena.
+  const uncertainty = Math.max(0.6, Math.min(1.8, rating.sigma / DEFAULT_SIGMA));
+  rating.mu += direction * BASE_K * JOINT_FEEDBACK_SCALE * multiplier * uncertainty;
   rating.sigma = Math.max(MIN_SIGMA, rating.sigma * SIGMA_DECAY * 0.99);
   rating.n += 1;
 }
@@ -400,6 +427,10 @@ function mergeStates(first, second) {
   const merged = mergeComparisonData(local, remote);
   return rebuildRatings({
     ...(merged.localIsNewer ? local : remote),
+    priors: {
+      ...(merged.localIsNewer ? remote.priors : local.priors),
+      ...(merged.localIsNewer ? local.priors : remote.priors),
+    },
     history: merged.history,
     history_tombstones: merged.history_tombstones,
     reset_at: merged.reset_at,
@@ -569,7 +600,8 @@ async function importStateBackup(file) {
   if (!file) return;
   const imported = parseStateBackup(JSON.parse(await file.text()));
   const rated = Object.values(imported.ratings).filter((rating) => Number(rating.n) > 0).length;
-  const prompt = `Import ${imported.history.length} comparisons and ${rated} rated papers for ${config.short_name}? This replaces the rankings currently stored in this browser.`;
+  const predicted = Object.keys(imported.priors).length;
+  const prompt = `Import ${imported.history.length} comparisons, ${rated} rated papers, and ${predicted} predicted priors for ${config.short_name}? This replaces the rankings currently stored in this browser.`;
   if (!confirm(prompt)) return;
   const importedIds = new Set(imported.history.map((entry) => entry.id));
   const replacedIds = state.history.map((entry) => entry.id).filter((id) => !importedIds.has(id));
@@ -584,7 +616,7 @@ async function importStateBackup(file) {
   syncControls();
   persistState();
   rebuildFiltered();
-  showMessage(`Imported ${state.history.length} comparisons and ${rated} rated papers.`);
+  showMessage(`Imported ${state.history.length} comparisons, ${rated} rated papers, and ${predicted} predicted priors.`);
 }
 
 function exportCSV() {
@@ -600,6 +632,7 @@ function exportCSV() {
 function activateTab(tab) {
   document.querySelectorAll(".tab").forEach((button) => button.classList.toggle("active", button.dataset.tab === tab));
   document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `tab-${tab}`));
+  document.body.classList.toggle("viz-active", tab === "viz");
   if (tab === "viz") {
     notifyVisualization();
     el("vizFrame")?.contentWindow?.postMessage({ type: "viz_resize" }, window.location.origin);
@@ -620,7 +653,7 @@ function wireEvents() {
     if (!confirm(`Reset all ${config.short_name} ratings and history?`)) return;
     const resetAt = new Date().toISOString();
     const tombstones = [...new Set([...state.history_tombstones, ...state.history.map((entry) => entry.id)])];
-    state = { ...defaultState(), history_tombstones: tombstones, reset_at: resetAt };
+    state = { ...defaultState(), priors: state.priors, history_tombstones: tombstones, reset_at: resetAt };
     syncControls(); persistState(); rebuildFiltered();
   });
   el("btnExportState").addEventListener("click", exportStateBackup);
@@ -656,7 +689,9 @@ function refreshStateUI() {
 }
 
 function stateHasRankings(value) {
-  return value.history.length > 0 || Object.values(value.ratings).some((rating) => Number(rating.n) > 0);
+  return Object.keys(value.priors).length > 0
+    || value.history.length > 0
+    || Object.values(value.ratings).some((rating) => Number(rating.n) > 0);
 }
 
 function changeCloudUser(user) {
@@ -687,7 +722,7 @@ function changeCloudUser(user) {
   } else if (guestOwner === user.uid) {
     state = normalizeState(guestState);
     persistState({ touch: false, sync: false });
-  } else if (!guestOwner && stateHasRankings(guestState) && confirm(`Import this browser's ${guestState.history.length} guest comparisons into ${user.email || "your account"}?`)) {
+  } else if (!guestOwner && stateHasRankings(guestState) && confirm(`Import this browser's ${guestState.history.length} guest comparisons and ${Object.keys(guestState.priors).length} predicted priors into ${user.email || "your account"}?`)) {
     state = normalizeState(guestState);
     localStorage.setItem(guestOwnerKey(), user.uid);
     persistState({ touch: true, sync: false });

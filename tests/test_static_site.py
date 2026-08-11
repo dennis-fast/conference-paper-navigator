@@ -96,6 +96,59 @@ if (syncFingerprint(browser) === syncFingerprint({...firestore, schema_version: 
         self.assertIn("Export rankings", html)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is not installed")
+    def test_joint_feedback_is_uncertainty_aware(self):
+        source = (ROOT / "src" / "web" / "app" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("rating.sigma / DEFAULT_SIGMA", source)
+        self.assertIn("multiplier * uncertainty", source)
+
+    def test_transferred_priors_seed_but_do_not_count_as_reviews(self):
+        app_source = (ROOT / "src" / "web" / "app" / "app.js").read_text(encoding="utf-8")
+        viz_source = (ROOT / "src" / "web" / "viz" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("priors: {}", app_source)
+        self.assertIn("target.priors?.[id]", app_source)
+        self.assertIn("effectiveRatings(state)", app_source)
+        self.assertIn('["Predicted", Object.keys(state.priors).length]', app_source)
+        self.assertIn("stateHasRankings", app_source)
+        self.assertIn("priors: state.priors", app_source)
+        self.assertIn("parsed?.priors || {}", viz_source)
+
+    def test_embedding_workspace_prioritizes_the_plot(self):
+        shell_html = (ROOT / "src" / "web" / "app" / "index.html").read_text(encoding="utf-8")
+        shell_css = (ROOT / "src" / "web" / "app" / "styles.css").read_text(encoding="utf-8")
+        viz_html = (ROOT / "src" / "web" / "viz" / "index.html").read_text(encoding="utf-8")
+        viz_css = (ROOT / "src" / "web" / "viz" / "styles.css").read_text(encoding="utf-8")
+        viz_source = (ROOT / "src" / "web" / "viz" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('allow="fullscreen"', shell_html)
+        self.assertIn("body.viz-active .wrap{max-width:none}", shell_css)
+        for element_id in ("toggle-controls-btn", "focus-plot-btn", "toggle-inspector-btn", "fullscreen-btn", "category-legend"):
+            self.assertIn(f'id="{element_id}"', viz_html)
+        self.assertIn('class="advanced-settings"', viz_html)
+        self.assertIn('id="selection-panel"', viz_html)
+        self.assertIn('class="plot-stage"', viz_html)
+        self.assertIn("grid-template-rows: auto minmax(0, 1fr)", viz_css)
+        self.assertIn("position: absolute;\n  inset: 0 0 var(--selection-summary-height);", viz_css)
+        self.assertIn(".selection-panel[open]", viz_css)
+        self.assertIn("document.documentElement.requestFullscreen()", viz_source)
+        self.assertIn("showlegend: false", viz_source)
+        self.assertIn("renderCategoryLegend", viz_source)
+        self.assertIn("if (layout.classList.contains(className) === collapsed) return;", viz_source)
+
+    def test_generated_web_assets_match_sources(self):
+        mappings = {
+            "index.html": ROOT / "src" / "web" / "app" / "index.html",
+            "assets/js/app.js": ROOT / "src" / "web" / "app" / "app.js",
+            "assets/css/styles.css": ROOT / "src" / "web" / "app" / "styles.css",
+            "viz/index.html": ROOT / "src" / "web" / "viz" / "index.html",
+            "viz/app.js": ROOT / "src" / "web" / "viz" / "app.js",
+            "viz/styles.css": ROOT / "src" / "web" / "viz" / "styles.css",
+        }
+        for conference_id in ("eacl-2026", "ijcai-2026"):
+            for relative, source in mappings.items():
+                with self.subTest(conference=conference_id, asset=relative):
+                    self.assertEqual(source.read_bytes(), (ROOT / "docs" / conference_id / relative).read_bytes())
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is not installed")
     def test_javascript_syntax(self):
         for path in (
             ROOT / "src" / "web" / "app" / "app.js",

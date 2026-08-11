@@ -12,6 +12,8 @@ const state = {
   lastRequestPayload: null,
   lastPlotMeta: { colorBy: 'Session', mode: 'all' },
   lastNeighbors: [],
+  hiddenCategories: new Set(),
+  legendColorBy: null,
   ratings: {},
   colorMaps: {
     Session: {},
@@ -45,7 +47,11 @@ function readRankingStateFromStorage() {
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw);
-    return parsed?.ratings || {};
+    const priors = Object.fromEntries(Object.entries(parsed?.priors || {}).map(([paperId, prior]) => [
+      paperId,
+      { mu: prior.mu, sigma: prior.sigma, n: 0, wins: 0, losses: 0, ties: 0 },
+    ]));
+    return { ...priors, ...(parsed?.ratings || {}) };
   } catch {
     return {};
   }
@@ -617,10 +623,12 @@ function buildTraces(points, mode, colorBy) {
         opacity: items.map((p) => opacityById.get(p.paper_id) ?? 0.65),
         color: getCategoryColor(category, colorBy),
       },
+      visible: state.hiddenCategories.has(String(category)) ? false : true,
+      showlegend: false,
     });
   });
 
-  const matched = points.filter((p) => p.matched);
+  const matched = points.filter((p) => p.matched && !state.hiddenCategories.has(String(p.color_value || 'Unknown')));
   if (matched.length > 0 && qs('search-mode').value === 'highlight' && qs('search-text').value.trim()) {
     traces.push({
       type: 'scatter',
@@ -643,47 +651,71 @@ function buildTraces(points, mode, colorBy) {
         color: 'rgba(0,0,0,0)',
         line: { width: 2, color: '#d92d20' },
       },
+      showlegend: false,
     });
   }
 
   return traces;
 }
 
-function legendAndMarginForViewport() {
+function plotMarginForViewport() {
   const isSmallScreen = window.matchMedia('(max-width: 900px)').matches;
-  if (isSmallScreen) {
-    return {
-      legend: {
-        orientation: 'h',
-        x: 0,
-        xanchor: 'left',
-        y: -0.22,
-        yanchor: 'top',
-        traceorder: 'normal',
-        font: { size: 11 },
-      },
-      margin: { t: 48, r: 16, b: 150, l: 48 },
-    };
+  return isSmallScreen
+    ? { t: 48, r: 12, b: 44, l: 48 }
+    : { t: 52, r: 18, b: 52, l: 56 };
+}
+
+function renderCategoryLegend(points, colorBy) {
+  if (state.legendColorBy !== colorBy) {
+    state.hiddenCategories.clear();
+    state.legendColorBy = colorBy;
   }
 
-  return {
-    legend: {
-      orientation: 'h',
-      x: 0,
-      xanchor: 'left',
-      y: -0.2,
-      yanchor: 'top',
-      traceorder: 'normal',
-    },
-    margin: { t: 48, r: 16, b: 90, l: 48 },
-  };
+  const grouped = groupByCategory(points);
+  const categories = [...grouped.entries()].sort(([a], [b]) => String(a).localeCompare(String(b)));
+  qs('legend-title').textContent = `${colorBy} (${categories.length})`;
+  const container = qs('category-legend');
+  container.innerHTML = '';
+
+  categories.forEach(([category, items]) => {
+    const key = String(category);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `legend-item${state.hiddenCategories.has(key) ? ' is-hidden' : ''}`;
+    button.title = `${key}: ${items.length} papers`;
+
+    const swatch = document.createElement('span');
+    swatch.className = 'legend-swatch';
+    swatch.style.background = getCategoryColor(key, colorBy);
+    const label = document.createElement('span');
+    label.className = 'legend-label';
+    label.textContent = key;
+    const count = document.createElement('span');
+    count.className = 'legend-count';
+    count.textContent = items.length;
+    button.append(swatch, label, count);
+
+    button.addEventListener('click', (event) => {
+      if (event.shiftKey) {
+        if (state.hiddenCategories.has(key)) state.hiddenCategories.delete(key);
+        else state.hiddenCategories.add(key);
+      } else {
+        const isOnlyVisible = categories.every(([value]) => String(value) === key || state.hiddenCategories.has(String(value)));
+        state.hiddenCategories = isOnlyVisible
+          ? new Set()
+          : new Set(categories.map(([value]) => String(value)).filter((value) => value !== key));
+      }
+      renderPlot(state.currentPoints, state.lastPlotMeta.colorBy, state.lastPlotMeta.mode);
+    });
+    container.appendChild(button);
+  });
 }
 
 function renderPlot(points, colorBy, mode) {
   const plot = qs('plot');
   state.lastPlotMeta = { colorBy, mode };
+  renderCategoryLegend(points, colorBy);
   const traces = buildTraces(points, mode, colorBy);
-  const viewportLayout = legendAndMarginForViewport();
 
   Plotly.newPlot(
     plot,
@@ -691,15 +723,17 @@ function renderPlot(points, colorBy, mode) {
     {
       dragmode: 'lasso',
       title: `2D projection (color by ${colorBy})`,
-      margin: viewportLayout.margin,
-      xaxis: { title: 'x' },
-      yaxis: { title: 'y' },
-      legend: viewportLayout.legend,
+      margin: plotMarginForViewport(),
+      xaxis: { title: 'Dimension 1', automargin: true },
+      yaxis: { title: 'Dimension 2', automargin: true },
+      showlegend: false,
       hovermode: 'closest',
+      uirevision: `${state.lastRequestPayload?.method || 'projection'}-${colorBy}`,
     },
     {
       responsive: true,
       displaylogo: false,
+      scrollZoom: true,
       modeBarButtonsToAdd: ['select2d', 'lasso2d'],
     }
   );
@@ -720,32 +754,27 @@ function renderPlot(points, colorBy, mode) {
 
     state.selectedPoints = mergeUniqueRows([...selected, ...getHighlightedRows()]);
     renderSelectionTable();
+    if (state.selectedPoints.length > 0) qs('selection-panel').open = true;
   });
 
   plot.on('plotly_click', async (ev) => {
     if (!ev || !ev.points || ev.points.length === 0) return;
     const [paper_id, title, session, room_location, type_presentation, attendance_type] = ev.points[0].customdata;
     state.currentClickedPaperId = paper_id;
+    setPanelCollapsed('right', false);
     renderDetails({ paper_id, title, session, room_location, type_presentation, attendance_type });
     await refreshNeighbors();
   });
 }
 
-function requestPlotResize() {
+function requestPlotResize({ updateMargins = false } = {}) {
   const plot = qs('plot');
   if (!plot || !plot.data) return;
   const applyResize = () => {
     Plotly.Plots.resize(plot);
-    const viewportLayout = legendAndMarginForViewport();
-    Plotly.relayout(plot, {
-      margin: viewportLayout.margin,
-      legend: viewportLayout.legend,
-    });
+    if (updateMargins) Plotly.relayout(plot, { margin: plotMarginForViewport() });
   };
-  requestAnimationFrame(() => {
-    applyResize();
-    setTimeout(applyResize, 60);
-  });
+  requestAnimationFrame(applyResize);
 }
 
 function renderStats(stats) {
@@ -765,6 +794,7 @@ function renderSelectionTable() {
 
   const { key, dir } = state.sort;
   const rows = [...state.selectedPoints].sort((a, b) => compareValues(a[key], b[key], dir));
+  qs('selection-count').textContent = rows.length;
 
   rows.forEach((row) => {
     const tr = document.createElement('tr');
@@ -777,6 +807,52 @@ function renderSelectionTable() {
     `;
     tbody.appendChild(tr);
   });
+}
+
+function updateLayoutButtons() {
+  const layout = qs('viz-layout');
+  const controlsCollapsed = layout.classList.contains('left-collapsed');
+  const inspectorCollapsed = layout.classList.contains('right-collapsed');
+  const focusMode = controlsCollapsed && inspectorCollapsed;
+  qs('toggle-controls-btn').textContent = controlsCollapsed ? 'Show controls' : 'Hide controls';
+  qs('toggle-controls-btn').setAttribute('aria-expanded', String(!controlsCollapsed));
+  qs('toggle-inspector-btn').textContent = inspectorCollapsed ? 'Show inspector' : 'Hide inspector';
+  qs('toggle-inspector-btn').setAttribute('aria-expanded', String(!inspectorCollapsed));
+  qs('focus-plot-btn').textContent = focusMode ? 'Show panels' : 'Focus plot';
+}
+
+function setPanelCollapsed(side, collapsed) {
+  const layout = qs('viz-layout');
+  const className = side === 'left' ? 'left-collapsed' : 'right-collapsed';
+  if (layout.classList.contains(className) === collapsed) return;
+  layout.classList.toggle(className, collapsed);
+  updateLayoutButtons();
+  requestPlotResize();
+}
+
+function toggleFocusPlot() {
+  const layout = qs('viz-layout');
+  const focusMode = layout.classList.contains('left-collapsed') && layout.classList.contains('right-collapsed');
+  layout.classList.toggle('left-collapsed', !focusMode);
+  layout.classList.toggle('right-collapsed', !focusMode);
+  updateLayoutButtons();
+  requestPlotResize();
+}
+
+function updateFullscreenButton() {
+  const fullscreen = Boolean(document.fullscreenElement);
+  qs('fullscreen-btn').textContent = fullscreen ? 'Exit full screen' : 'Full screen';
+  qs('fullscreen-btn').setAttribute('aria-pressed', String(fullscreen));
+  requestPlotResize({ updateMargins: true });
+}
+
+async function toggleFullscreen() {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await document.documentElement.requestFullscreen();
+  } catch (error) {
+    setStatus(`Full screen is unavailable: ${error.message}`, true);
+  }
 }
 
 function renderDetails(paper) {
@@ -1042,6 +1118,20 @@ function wireEvents() {
   qs('export-selected-btn').addEventListener('click', exportSelectedIds);
   qs('export-projection-btn').addEventListener('click', exportProjection);
   qs('nn-refresh-btn').addEventListener('click', refreshNeighbors);
+  qs('toggle-controls-btn').addEventListener('click', () => {
+    const collapsed = qs('viz-layout').classList.contains('left-collapsed');
+    setPanelCollapsed('left', !collapsed);
+  });
+  qs('toggle-inspector-btn').addEventListener('click', () => {
+    const collapsed = qs('viz-layout').classList.contains('right-collapsed');
+    setPanelCollapsed('right', !collapsed);
+  });
+  qs('focus-plot-btn').addEventListener('click', toggleFocusPlot);
+  qs('fullscreen-btn').addEventListener('click', toggleFullscreen);
+  qs('legend-show-all-btn').addEventListener('click', () => {
+    state.hiddenCategories.clear();
+    renderPlot(state.currentPoints, state.lastPlotMeta.colorBy, state.lastPlotMeta.mode);
+  });
 
   qs('share-link-btn').addEventListener('click', async () => {
     saveViewState();
@@ -1090,6 +1180,7 @@ async function init() {
     const oralShortcut = document.getElementById('oral-only-control');
     if (oralShortcut && conference.id === 'ijcai-2026') oralShortcut.hidden = true;
     wireEvents();
+    updateLayoutButtons();
     refreshRatingsFromStorage();
     updateMethodParamVisibility();
     updateModeUI();
@@ -1120,7 +1211,7 @@ window.addEventListener('message', (event) => {
   if (event.origin !== window.location.origin) return;
   const data = event.data || {};
   if (data.type === 'viz_resize') {
-    requestPlotResize();
+    requestPlotResize({ updateMargins: true });
     return;
   }
   if (data.type !== 'ranking_state_update') return;
@@ -1135,7 +1226,9 @@ window.addEventListener('message', (event) => {
 });
 
 window.addEventListener('resize', () => {
-  requestPlotResize();
+  requestPlotResize({ updateMargins: true });
 });
+
+document.addEventListener('fullscreenchange', updateFullscreenButton);
 
 init();

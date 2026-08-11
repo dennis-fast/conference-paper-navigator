@@ -8,9 +8,21 @@
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   </head>
   <body>
-    <div class="app-layout">
-      <aside class="sidebar left">
-        <h1 id="viz-conference-name">Conference Embeddings</h1>
+    <div class="app-layout" id="viz-layout">
+      <header class="viz-toolbar">
+        <div class="viz-title">
+          <h1 id="viz-conference-name">Conference Embeddings</h1>
+          <span>Explore semantic neighborhoods in the selected projection.</span>
+        </div>
+        <div class="toolbar-actions">
+          <button id="toggle-controls-btn" class="secondary compact" type="button" aria-controls="controls-sidebar" aria-expanded="true">Hide controls</button>
+          <button id="focus-plot-btn" class="secondary compact" type="button">Focus plot</button>
+          <button id="toggle-inspector-btn" class="secondary compact" type="button" aria-controls="inspector-sidebar" aria-expanded="true">Hide inspector</button>
+          <button id="fullscreen-btn" class="compact" type="button">Full screen</button>
+        </div>
+      </header>
+
+      <aside class="sidebar left" id="controls-sidebar">
 
         <section class="panel">
           <h2>Projection</h2>
@@ -22,50 +34,53 @@
             </select>
           </label>
 
-          <div id="params-pca" class="param-group">
-            <label><input type="checkbox" id="pca-whiten" /> Whiten</label>
-            <label>random_state <input type="number" id="pca-random-state" value="42" /></label>
-          </div>
+          <details class="advanced-settings">
+            <summary>Advanced projection parameters</summary>
+            <div id="params-pca" class="param-group">
+              <label><input type="checkbox" id="pca-whiten" /> Whiten</label>
+              <label>random_state <input type="number" id="pca-random-state" value="42" /></label>
+            </div>
 
-          <div id="params-tsne" class="param-group hidden">
-            <label>perplexity <input type="number" id="tsne-perplexity" value="30" min="5" max="100" step="1" /></label>
-            <label>learning_rate
-              <input type="text" id="tsne-learning-rate" value="auto" />
-            </label>
-            <label>n_iter <input type="number" id="tsne-n-iter" value="1000" min="250" max="5000" step="50" /></label>
-            <label>init
-              <select id="tsne-init">
-                <option value="pca">pca</option>
-                <option value="random">random</option>
-              </select>
-            </label>
-            <label>metric
-              <select id="tsne-metric">
-                <option value="cosine">cosine</option>
-                <option value="euclidean">euclidean</option>
-              </select>
-            </label>
-            <label>random_state <input type="number" id="tsne-random-state" value="42" /></label>
-            <label>PCA pre-components
-              <input type="number" id="tsne-pca-pre" value="50" min="2" step="1" />
-            </label>
-          </div>
+            <div id="params-tsne" class="param-group hidden">
+              <label>perplexity <input type="number" id="tsne-perplexity" value="30" min="5" max="100" step="1" /></label>
+              <label>learning_rate
+                <input type="text" id="tsne-learning-rate" value="auto" />
+              </label>
+              <label>n_iter <input type="number" id="tsne-n-iter" value="1000" min="250" max="5000" step="50" /></label>
+              <label>init
+                <select id="tsne-init">
+                  <option value="pca">pca</option>
+                  <option value="random">random</option>
+                </select>
+              </label>
+              <label>metric
+                <select id="tsne-metric">
+                  <option value="cosine">cosine</option>
+                  <option value="euclidean">euclidean</option>
+                </select>
+              </label>
+              <label>random_state <input type="number" id="tsne-random-state" value="42" /></label>
+              <label>PCA pre-components
+                <input type="number" id="tsne-pca-pre" value="50" min="2" step="1" />
+              </label>
+            </div>
 
-          <div id="params-umap" class="param-group hidden">
-            <label>n_neighbors <input type="number" id="umap-n-neighbors" value="15" min="5" max="200" step="1" /></label>
-            <label>min_dist <input type="number" id="umap-min-dist" value="0.1" min="0" max="1" step="0.01" /></label>
-            <label>metric
-              <select id="umap-metric">
-                <option value="cosine">cosine</option>
-                <option value="euclidean">euclidean</option>
-              </select>
-            </label>
-            <label>spread <input type="number" id="umap-spread" value="1.0" min="0.1" step="0.1" /></label>
-            <label>random_state <input type="number" id="umap-random-state" value="42" /></label>
-            <label>PCA pre-components
-              <input type="number" id="umap-pca-pre" value="50" min="2" step="1" />
-            </label>
-          </div>
+            <div id="params-umap" class="param-group hidden">
+              <label>n_neighbors <input type="number" id="umap-n-neighbors" value="15" min="5" max="200" step="1" /></label>
+              <label>min_dist <input type="number" id="umap-min-dist" value="0.1" min="0" max="1" step="0.01" /></label>
+              <label>metric
+                <select id="umap-metric">
+                  <option value="cosine">cosine</option>
+                  <option value="euclidean">euclidean</option>
+                </select>
+              </label>
+              <label>spread <input type="number" id="umap-spread" value="1.0" min="0.1" step="0.1" /></label>
+              <label>random_state <input type="number" id="umap-random-state" value="42" /></label>
+              <label>PCA pre-components
+                <input type="number" id="umap-pca-pre" value="50" min="2" step="1" />
+              </label>
+            </div>
+          </details>
         </section>
 
         <section class="panel">
@@ -123,10 +138,16 @@
       </aside>
 
       <main class="main-panel">
-        <div id="plot"></div>
-        <section class="panel selection-panel">
+        <div class="plot-stage">
+          <div id="plot"></div>
+        </div>
+        <details class="panel selection-panel" id="selection-panel">
+          <summary class="selection-summary">
+            <strong>Selected papers</strong>
+            <span id="selection-count">0</span>
+          </summary>
           <div class="selection-header">
-            <h2>Selected papers</h2>
+            <span>Lasso points in the plot to collect papers.</span>
             <button id="export-selected-btn" class="secondary">Export selected IDs CSV</button>
           </div>
           <table id="selection-table">
@@ -141,10 +162,19 @@
             </thead>
             <tbody></tbody>
           </table>
-        </section>
+        </details>
       </main>
 
-      <aside class="sidebar right">
+      <aside class="sidebar right" id="inspector-sidebar">
+        <section class="panel legend-panel">
+          <div class="legend-header">
+            <h2 id="legend-title">Color groups</h2>
+            <button id="legend-show-all-btn" class="secondary inline" type="button">Show all</button>
+          </div>
+          <p class="panel-hint">Click a group to isolate it. Shift-click to show or hide several groups.</p>
+          <div id="category-legend"></div>
+        </section>
+
         <section class="panel">
           <h2>Paper details</h2>
           <div id="details-empty">Click a point to inspect details.</div>
