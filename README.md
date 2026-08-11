@@ -60,14 +60,29 @@ tests/                    # Schema, build, and frontend contracts
 
 - paper overview with conference-derived filters
 - pairwise preference ranking with uncertainty-aware Elo updates
-- conference-namespaced browser state, import, and export
+- conference- and user-namespaced browser state, import, and export
+- optional private cross-device synchronization with Google sign-in and Firestore
 - PCA, t-SNE, and UMAP projections with nearest neighbours
 - oral room recommendations by simultaneous time block
 - optional talk-order comparison when the source publishes presentation order
 - ranked poster and demo priorities
 - scored CSV export
 
-All personal ranking state remains in the browser. The deployed application has no backend.
+Personal ranking state always remains available in the browser. Optional Firebase sync can store a private copy for an authenticated user; it is disabled until a Firebase project is configured.
+
+## Ranking backups
+
+Use **Export rankings** to download a JSON backup containing the conference ID, export timestamp, summary, ratings, comparison history, and ranking controls. Use **Import rankings** on another browser or device to restore it. Imports validate the schema and conference, then ask for confirmation before replacing the current rankings. Older raw state exports remain supported.
+
+The scored CSV is useful for analysis, but it is not a restorable backup because it does not contain comparison history. Browser storage is isolated by site origin, device, and browser profile, so export periodically if cloud sync is not configured.
+
+## Optional cloud synchronization
+
+The static app supports Google sign-in and Firestore without operating a custom server. Each conference state is stored at `users/{uid}/conferences/{conferenceId}` and protected by rules that compare the path UID with the authenticated user's UID. Comparison histories are merged transactionally using stable event IDs; undo and reset markers prevent removed comparisons from returning during a merge.
+
+Signing out stops cloud access but keeps the last synchronized ranking available on that device. Comparisons made while signed out are merged back into Firestore when the same account signs in again. Because that local copy remains visible, clear the site's browser data after signing out on a shared device.
+
+Cloud sync is opt-in and fails back to local storage. Follow [FIREBASE_SETUP.md](FIREBASE_SETUP.md) to create the free Firebase project, deploy the included security rules, add the public web configuration, and enable synchronization.
 
 ## Common commands
 

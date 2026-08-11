@@ -14,10 +14,13 @@
     <div class="sub" id="conferenceDescription"></div>
   </div>
   <div class="controls">
+    <span class="cloud-status" id="cloudStatus" aria-live="polite">Checking cloud sync…</span>
+    <button class="btn cloud" id="btnSignIn" hidden>Sign in with Google</button>
+    <button class="btn cloud" id="btnSignOut" hidden>Sign out</button>
     <label class="btn">Load dataset<input id="datasetFile" type="file" accept=".json,application/json" /></label>
     <button class="btn" id="btnReset">Reset ranking</button>
-    <label class="btn">Import state<input id="stateFile" type="file" accept=".json,application/json" /></label>
-    <button class="btn" id="btnExportState">Export state</button>
+    <label class="btn">Import rankings<input id="stateFile" type="file" accept=".json,application/json" /></label>
+    <button class="btn" id="btnExportState">Export rankings</button>
     <button class="btn" id="btnExportCSV">Export scored CSV</button>
   </div>
 </header>
@@ -43,7 +46,7 @@
         <label class="top-filter-check"><input id="hasWinsOnly" type="checkbox" /> <span>Hide papers with no wins</span></label>
       </div>
     </div>
-    <div id="errors" class="errors"></div>
+    <div id="errors" class="errors" role="status" aria-live="polite"></div>
   </section>
 
   <section id="tab-guide" class="tab-panel active">
@@ -56,6 +59,7 @@
         <div><strong>3. Rank</strong><span>Compare pairs to learn a personal relevance ordering.</span></div>
         <div><strong>4. Plan</strong><span>Prioritize oral rooms and poster visits by your ranking.</span></div>
       </div>
+      <p class="hint"><strong>Moving between devices?</strong> When cloud sync is configured, sign in with the same Google account to synchronize private rankings automatically. You can also use <em>Export rankings</em> and <em>Import rankings</em> for portable backups.</p>
       <p class="hint" id="guideNotes"></p>
     </section>
   </section>
