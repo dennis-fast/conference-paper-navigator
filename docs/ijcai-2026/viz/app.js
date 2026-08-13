@@ -15,6 +15,7 @@ const state = {
   hiddenCategories: new Set(),
   legendColorBy: null,
   ratings: {},
+  favorites: {},
   colorMaps: {
     Session: {},
     'Room Location': {},
@@ -44,21 +45,41 @@ function qs(id) {
 
 function readRankingStateFromStorage() {
   const raw = localStorage.getItem(RANKING_STORAGE_KEY);
-  if (!raw) return {};
+  if (!raw) return { ratings: {}, favorites: {} };
   try {
     const parsed = JSON.parse(raw);
     const priors = Object.fromEntries(Object.entries(parsed?.priors || {}).map(([paperId, prior]) => [
       paperId,
       { mu: prior.mu, sigma: prior.sigma, n: 0, wins: 0, losses: 0, ties: 0 },
     ]));
-    return { ...priors, ...(parsed?.ratings || {}) };
+    return { ratings: { ...priors, ...(parsed?.ratings || {}) }, favorites: parsed?.favorites || {} };
   } catch {
-    return {};
+    return { ratings: {}, favorites: {} };
   }
 }
 
 function refreshRatingsFromStorage() {
-  state.ratings = readRankingStateFromStorage();
+  const stored = readRankingStateFromStorage();
+  state.ratings = stored.ratings;
+  state.favorites = stored.favorites;
+}
+
+function isFavorite(paperId) {
+  return Boolean(state.favorites?.[String(paperId)]?.selected);
+}
+
+function favoriteButton(paperId) {
+  const selected = isFavorite(paperId);
+  return `<button class="favorite-viz icon" type="button" data-favorite-id="${paperId}" aria-label="${selected ? 'Remove from favorites' : 'Add to favorites'}" aria-pressed="${selected}">${selected ? '★' : '☆'}</button>`;
+}
+
+function requestFavoriteToggle(paperId) {
+  const selected = !isFavorite(paperId);
+  state.favorites[String(paperId)] = { selected, modified_at: new Date().toISOString() };
+  window.parent.postMessage({ type: 'favorite_update', payload: { paperId: String(paperId), selected } }, window.location.origin);
+  renderSelectionTable();
+  renderNeighbors(state.lastNeighbors);
+  if (state.currentClickedPaperId === String(paperId)) updateDetailFavoriteButton();
 }
 
 function buildRankMap() {
@@ -799,6 +820,7 @@ function renderSelectionTable() {
   rows.forEach((row) => {
     const tr = document.createElement('tr');
     tr.innerHTML = `
+      <td>${favoriteButton(row.paper_id)}</td>
       <td>${row.rank ?? '-'}</td>
       <td>${row.paper_id}</td>
       <td>${row.title}</td>
@@ -864,6 +886,14 @@ function renderDetails(paper) {
   qs('detail-room').textContent = paper.room_location;
   qs('detail-type').textContent = paper.type_presentation;
   qs('detail-attendance').textContent = paper.attendance_type;
+  updateDetailFavoriteButton();
+}
+
+function updateDetailFavoriteButton() {
+  const button = qs('detail-favorite-btn');
+  const selected = isFavorite(state.currentClickedPaperId);
+  button.textContent = selected ? '★ Favorite' : '☆ Add to favorites';
+  button.setAttribute('aria-pressed', String(selected));
 }
 
 function renderNeighbors(rows) {
@@ -876,6 +906,7 @@ function renderNeighbors(rows) {
     const rank = rankForPaperId(row.paper_id, rankMap);
     const tr = document.createElement('tr');
     tr.innerHTML = `
+      <td>${favoriteButton(row.paper_id)}</td>
       <td>${rank ?? '-'}</td>
       <td>${row.paper_id}</td>
       <td>${row.title}</td>
@@ -1118,6 +1149,14 @@ function wireEvents() {
   qs('export-selected-btn').addEventListener('click', exportSelectedIds);
   qs('export-projection-btn').addEventListener('click', exportProjection);
   qs('nn-refresh-btn').addEventListener('click', refreshNeighbors);
+  qs('detail-favorite-btn').addEventListener('click', () => {
+    if (state.currentClickedPaperId) requestFavoriteToggle(state.currentClickedPaperId);
+  });
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-favorite-id]');
+    if (!button) return;
+    event.preventDefault(); event.stopPropagation(); requestFavoriteToggle(button.dataset.favoriteId);
+  });
   qs('toggle-controls-btn').addEventListener('click', () => {
     const collapsed = qs('viz-layout').classList.contains('left-collapsed');
     setPanelCollapsed('left', !collapsed);
@@ -1217,6 +1256,7 @@ window.addEventListener('message', (event) => {
   if (data.type !== 'ranking_state_update') return;
   if (data.payload?.ratings && typeof data.payload.ratings === 'object') {
     state.ratings = data.payload.ratings;
+    if (data.payload?.favorites && typeof data.payload.favorites === 'object') state.favorites = data.payload.favorites;
     renderSelectionTable();
     if (state.lastNeighbors.length > 0) renderNeighbors(state.lastNeighbors);
     if (state.currentPoints.length > 0) {

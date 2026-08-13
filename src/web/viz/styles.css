@@ -154,6 +154,23 @@ button.secondary {
   background: #4c6178;
 }
 
+button.favorite-viz {
+  width: auto;
+  color: #8a5a00;
+  background: #fff8dc;
+  border: 1px solid #e5b94f;
+  margin: 0 0 8px;
+}
+
+button.favorite-viz.icon {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  margin: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+
 button:disabled {
   opacity: 0.5;
   cursor: not-allowed;

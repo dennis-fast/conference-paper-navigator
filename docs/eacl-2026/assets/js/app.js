@@ -1,8 +1,9 @@
 import { toCSV } from "./csv.js";
 import { DEFAULT_MU, DEFAULT_SIGMA, MIN_SIGMA, SIGMA_DECAY, updatePair } from "./rating.js";
 import { chooseNextPair } from "./selector.js";
+import { blendPreferencePrediction, preferenceProgress, trainPreferenceModel } from "./preference-model.js";
 import { initializeCloudSync } from "./cloud-sync.js";
-import { mergeComparisonData } from "./merge-comparisons.js";
+import { mergeComparisonData, mergeFavorites } from "./merge-comparisons.js";
 
 const BASE_K = 32;
 const JOINT_FEEDBACK_SCALE = 0.45;
@@ -18,6 +19,8 @@ let currentPair = null;
 let state = null;
 let activeUserId = null;
 let cloudSync = null;
+let preferenceBundle = null;
+let preferenceModel = null;
 
 const el = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? "")
@@ -47,13 +50,16 @@ function defaultState() {
     conference_id: config.id,
     priors: {},
     ratings: {},
+    favorites: {},
     history: [],
     history_tombstones: [],
     reset_at: "",
     modified_at: "",
     lastPair: [],
-    mode: "active",
+    mode: "smart",
     topN: 60,
+    posterTarget: 10,
+    smartTarget: null,
     resolveTieNMatches: "minimal",
     muPriority: "highest",
     winsOnly: false,
@@ -116,6 +122,20 @@ function normalizeState(value) {
     ratings[String(paperId)] = rating;
   }
 
+  if (value.favorites != null && !isRecord(value.favorites)) throw new Error("The favorites list is invalid.");
+  const favorites = {};
+  for (const [paperId, rawFavorite] of Object.entries(value.favorites || {})) {
+    if (typeof rawFavorite === "boolean") {
+      favorites[String(paperId)] = { selected: rawFavorite, modified_at: "" };
+      continue;
+    }
+    if (!isRecord(rawFavorite)) throw new Error(`The favorite entry for paper ${paperId} is invalid.`);
+    favorites[String(paperId)] = {
+      selected: Boolean(rawFavorite.selected),
+      modified_at: typeof rawFavorite.modified_at === "string" ? rawFavorite.modified_at : "",
+    };
+  }
+
   if (value.history != null && !Array.isArray(value.history)) throw new Error("The comparison history is invalid.");
   const choices = new Set(["A", "STRONG_A", "B", "STRONG_B", "BOTH", "NEITHER", "SKIP"]);
   const history = (value.history || []).map((entry, index) => {
@@ -131,21 +151,33 @@ function normalizeState(value) {
   });
 
   const defaults = defaultState();
-  const modes = new Set(["active", "random", "bubble", "resolve_ties"]);
+  const modes = new Set(["smart", "active", "random", "bubble", "resolve_ties"]);
   const matchModes = new Set(["minimal", "random", "maximal"]);
   const priorities = new Set(["highest", "lowest", "random"]);
   const topN = Number(value.topN);
+  const posterTarget = Number(value.posterTarget);
+  const smartTarget = isRecord(value.smartTarget)
+    && ["oral", "poster"].includes(value.smartTarget.kind)
+    && typeof value.smartTarget.key === "string"
+    ? { kind: value.smartTarget.kind, key: value.smartTarget.key }
+    : null;
   return {
     ...defaults,
     priors,
     ratings,
+    favorites,
     history,
     history_tombstones: Array.isArray(value.history_tombstones) ? [...new Set(value.history_tombstones.map(String))].sort() : [],
     reset_at: typeof value.reset_at === "string" ? value.reset_at : "",
     modified_at: typeof value.modified_at === "string" ? value.modified_at : "",
     lastPair: Array.isArray(value.lastPair) ? value.lastPair.slice(0, 2) : [],
-    mode: modes.has(value.mode) ? value.mode : defaults.mode,
+    // States created before smart ranking used "active" as their implicit
+    // default and had no posterTarget. Migrate that default once while keeping
+    // explicit advanced-mode choices made by newer clients.
+    mode: value.posterTarget == null && value.mode === "active" ? "smart" : modes.has(value.mode) ? value.mode : defaults.mode,
     topN: Number.isInteger(topN) && topN >= 10 && topN <= 500 ? topN : defaults.topN,
+    posterTarget: Number.isInteger(posterTarget) && posterTarget >= 1 && posterTarget <= 100 ? posterTarget : defaults.posterTarget,
+    smartTarget,
     resolveTieNMatches: matchModes.has(value.resolveTieNMatches) ? value.resolveTieNMatches : defaults.resolveTieNMatches,
     muPriority: priorities.has(value.muPriority) ? value.muPriority : defaults.muPriority,
     winsOnly: Boolean(value.winsOnly),
@@ -163,6 +195,7 @@ function createStateBackup() {
       comparisons: state.history.length,
       rated_papers: Object.values(state.ratings).filter((rating) => Number(rating.n) > 0).length,
       prior_papers: Object.keys(state.priors).length,
+      favorites: selectedFavoriteIds().length,
     },
     state,
   };
@@ -196,7 +229,7 @@ function loadState() {
 function notifyVisualization() {
   const frame = el("vizFrame");
   frame?.contentWindow?.postMessage(
-    { type: "ranking_state_update", payload: { key: stateKey(), ratings: effectiveRatings(state) } },
+    { type: "ranking_state_update", payload: { key: stateKey(), ratings: effectiveDisplayRatings(), favorites: state.favorites } },
     window.location.origin,
   );
 }
@@ -231,6 +264,36 @@ function effectiveRatings(target) {
   return { ...ratings, ...target.ratings };
 }
 
+function selectedFavoriteIds(target = state) {
+  return Object.entries(target?.favorites || {}).filter(([, favorite]) => favorite?.selected).map(([paperId]) => paperId);
+}
+
+function isFavorite(paperId, target = state) {
+  return Boolean(target?.favorites?.[String(paperId)]?.selected);
+}
+
+function favoriteButton(paperId, extraClass = "") {
+  const selected = isFavorite(paperId);
+  const label = selected ? "Remove from favorites" : "Add to favorites";
+  return `<button class="favorite-btn ${extraClass}" type="button" data-favorite-id="${esc(paperId)}" aria-label="${label}" aria-pressed="${selected}">${selected ? "★" : "☆"}</button>`;
+}
+
+function toggleFavorite(paperId, selected = !isFavorite(paperId)) {
+  state.favorites[String(paperId)] = { selected, modified_at: new Date().toISOString() };
+  persistState();
+  rebuildFiltered();
+  showMessage(selected ? "Added paper to favorites and updated preference predictions." : "Removed paper from favorites.");
+}
+
+function effectiveDisplayRatings() {
+  if (!papers.length) return effectiveRatings(state);
+  return Object.fromEntries(papers.map((paper) => {
+    const base = readRating(String(paper.id));
+    const rating = blendPreferencePrediction(base, preferenceModel?.predictions?.get(String(paper.id)));
+    return [String(paper.id), rating];
+  }));
+}
+
 function presentationsOf(paper, type) {
   return (paper.presentations || []).filter((item) => item.type === type);
 }
@@ -244,13 +307,15 @@ function primaryPresentation(paper) {
 }
 
 function hydrate(paper) {
-  const rating = readRating(String(paper.id));
+  const paperId = String(paper.id);
+  const baseRating = readRating(paperId);
+  const rating = blendPreferencePrediction(baseRating, preferenceModel?.predictions?.get(paperId));
   const oral = firstPresentation(paper, "oral");
   const poster = firstPresentation(paper, "poster");
   const primary = primaryPresentation(paper);
   return {
     ...paper,
-    id: String(paper.id),
+    id: paperId,
     authorsText: (paper.authors || []).join(", "),
     keywordsText: (paper.keywords || []).join("; "),
     cat1: paper.primary_category || "",
@@ -265,6 +330,11 @@ function hydrate(paper) {
     sigma: Number(rating.sigma),
     n: Number(rating.n),
     wins: Number(rating.wins),
+    favorite: isFavorite(paperId),
+    predicted: Boolean(rating.predicted),
+    modelConfidence: Number(rating.modelConfidence || 0),
+    cluster: preferenceModel?.clusterById?.get(paperId),
+    representative: Boolean(preferenceModel?.representatives?.has(paperId)),
   };
 }
 
@@ -291,12 +361,14 @@ function presentationLabel(item) {
 }
 
 function rebuildFiltered() {
+  preferenceModel = trainPreferenceModel(preferenceBundle, state);
   const query = el("search").value.trim().toLowerCase();
   const track = el("trackFilter").value;
   const category = el("categoryFilter").value;
   const day = el("dayFilter").value;
   const location = el("locationFilter").value;
   const winsOnly = el("hasWinsOnly").checked;
+  const favoritesOnly = el("favoritesOnly").checked;
   filtered = papers.map(hydrate).filter((paper) => {
     if (track && paper.track !== track) return false;
     const topics = [paper.cat1, paper.cat2, ...(paper.keywords || [])];
@@ -304,12 +376,14 @@ function rebuildFiltered() {
     if (day && !(paper.presentations || []).some((item) => item.date === day)) return false;
     if (location && !(paper.presentations || []).some((item) => item.location === location)) return false;
     if (winsOnly && paper.wins < 1) return false;
+    if (favoritesOnly && !paper.favorite) return false;
     if (!query) return true;
     const schedule = (paper.presentations || []).flatMap((item) => Object.values(item));
     return [paper.id, paper.title, paper.abstract, paper.authorsText, paper.track, paper.cat1, paper.cat2, paper.keywordsText, ...schedule]
       .join(" ").toLowerCase().includes(query);
   });
   renderAll();
+  notifyVisualization();
 }
 
 function renderStats() {
@@ -318,7 +392,8 @@ function renderStats() {
     ["Filtered", filtered.length],
     ["Comparisons", state.history.length],
     ["Rated", Object.values(state.ratings).filter((rating) => Number(rating.n) > 0).length],
-    ["Predicted", Object.keys(state.priors).length],
+    ["Model-scored", preferenceModel?.hasSignal ? preferenceModel.predictions.size : Object.keys(state.priors).length],
+    ["Favorites", selectedFavoriteIds().length],
   ].map(([label, value]) => `<span class="pill">${label}: <b>${value}</b></span>`).join("");
 }
 
@@ -354,7 +429,7 @@ function renderOverview() {
 function paperHtml(paper) {
   const badges = (paper.presentations || []).map((item) => `<span class="chip">${esc(presentationLabel(item))}</span>`).join("");
   return `<article class="paper">
-    <div class="top">${esc(paper.title)}</div>
+    <div class="paper-heading"><div class="top">${esc(paper.title)}</div>${favoriteButton(paper.id)}</div>
     <div class="meta"><span>${esc(paper.id)}</span><span>${esc(paper.authorsText || "Authors unavailable")}</span><span>${esc(paper.track || paper.cat1 || "Uncategorized")}</span><span>μ ${paper.mu.toFixed(1)}</span></div>
     <div class="schedule-badges">${badges || '<span class="chip">Schedule unavailable</span>'}</div>
     <details class="abs"><summary>Abstract</summary><div>${esc(paper.abstract || "Abstract unavailable")}</div></details>
@@ -363,21 +438,25 @@ function paperHtml(paper) {
 
 function renderCard(paper, label) {
   if (!paper) return "";
-  return `<div class="head"><strong>${label}: ${esc(paper.title)}</strong><div class="k">${esc(paper.id)} · ${esc(paper.track || paper.cat1 || "Uncategorized")} · μ ${paper.mu.toFixed(1)} · σ ${paper.sigma.toFixed(1)} · n ${paper.n}</div></div>
+  return `<div class="head"><div class="paper-heading"><strong>${label}: ${esc(paper.title)}</strong>${favoriteButton(paper.id)}</div><div class="k">${esc(paper.id)} · ${esc(paper.track || paper.cat1 || "Uncategorized")} · μ ${paper.mu.toFixed(1)} · σ ${paper.sigma.toFixed(1)} · n ${paper.n}${paper.predicted ? " · model-informed" : ""}</div></div>
     <div class="body"><div class="small">${esc(paper.authorsText)}</div><p>${esc(paper.abstract || "Abstract unavailable")}</p><div class="schedule-badges">${(paper.presentations || []).map((item) => `<span class="chip">${esc(presentationLabel(item))}</span>`).join("")}</div></div>`;
 }
 
 function nextPair() {
-  const pair = chooseNextPair(filtered, state);
+  const pairPool = state.smartTarget ? papers.map(hydrate) : filtered;
+  const selection = chooseNextPair(pairPool, state);
   const arena = el("arena");
-  if (!pair) {
+  if (!selection?.pair) {
     currentPair = null;
     arena.hidden = true;
     return;
   }
+  const pair = selection.pair;
   currentPair = { A: pair[0], B: pair[1] };
   state.lastPair = [{ id: pair[0].id }, { id: pair[1].id }];
   arena.hidden = false;
+  el("pairReason").textContent = selection.reason || "";
+  el("pairStage").textContent = selection.stage || "Smart";
   el("cardA").innerHTML = renderCard(pair[0], "A");
   el("cardB").innerHTML = renderCard(pair[1], "B");
 }
@@ -425,12 +504,21 @@ function mergeStates(first, second) {
   const local = normalizeState(first);
   const remote = normalizeState(second);
   const merged = mergeComparisonData(local, remote);
-  return rebuildRatings({
-    ...(merged.localIsNewer ? local : remote),
-    priors: {
+  const localResetIsNewer = (local.reset_at || "") > (remote.reset_at || "");
+  const remoteResetIsNewer = (remote.reset_at || "") > (local.reset_at || "");
+  const favorites = localResetIsNewer
+    ? local.favorites
+    : remoteResetIsNewer ? remote.favorites : mergeFavorites(local.favorites, remote.favorites);
+  const priors = localResetIsNewer
+    ? local.priors
+    : remoteResetIsNewer ? remote.priors : {
       ...(merged.localIsNewer ? remote.priors : local.priors),
       ...(merged.localIsNewer ? local.priors : remote.priors),
-    },
+    };
+  return rebuildRatings({
+    ...(merged.localIsNewer ? local : remote),
+    priors,
+    favorites,
     history: merged.history,
     history_tombstones: merged.history_tombstones,
     reset_at: merged.reset_at,
@@ -471,8 +559,84 @@ function undo() {
 
 function renderLeaderboard() {
   el("leaderboard").innerHTML = filtered.slice().sort(comparePapers).slice(0, 40).map((paper, index) => `
-    <div class="lb-row"><div class="lb-top"><div class="lb-title">#${index + 1} — ${esc(paper.title)}</div><div class="small">μ ${paper.mu.toFixed(1)} · σ ${paper.sigma.toFixed(1)} · n ${paper.n}</div></div>
+    <div class="lb-row"><div class="lb-top"><div class="lb-title">#${index + 1} — ${esc(paper.title)}</div><div class="row-actions">${favoriteButton(paper.id)}<div class="small">μ ${paper.mu.toFixed(1)} · σ ${paper.sigma.toFixed(1)} · n ${paper.n}</div></div></div>
     <div class="lb-sub">${esc(paper.id)} · ${esc(paper.track || paper.cat1 || "Uncategorized")} · ${esc(presentationLabel(paper.oral || paper.poster))}</div></div>`).join("");
+}
+
+function scheduleKey(presentation) {
+  return `${presentation.date || "Unscheduled"}|||${presentation.time || "Time unavailable"}`;
+}
+
+function decisionProgress() {
+  const hydrated = papers.map(hydrate);
+  const oralSlots = new Map();
+  const posterBlocks = new Map();
+  for (const paper of hydrated) {
+    for (const presentation of paper.presentations || []) {
+      const key = scheduleKey(presentation);
+      if (presentation.type === "oral") {
+        if (!oralSlots.has(key)) oralSlots.set(key, new Map());
+        const room = presentation.location || "Location unavailable";
+        if (!oralSlots.get(key).has(room)) oralSlots.get(key).set(room, []);
+        oralSlots.get(key).get(room).push(paper);
+      } else if (["poster", "demo"].includes(presentation.type)) {
+        if (!posterBlocks.has(key)) posterBlocks.set(key, new Map());
+        posterBlocks.get(key).set(paper.id, paper);
+      }
+    }
+  }
+  let oralTotal = 0; let oralResolved = 0;
+  for (const rooms of oralSlots.values()) {
+    if (rooms.size < 2) continue;
+    oralTotal += 1;
+    const blocks = [...rooms.values()].map((roomPapers) => {
+      const ranked = [...roomPapers].sort(comparePapers);
+      const max = ranked[0]?.mu ?? DEFAULT_MU;
+      const second = ranked[1]?.mu ?? max;
+      const mean = ranked.reduce((sum, paper) => sum + paper.mu, 0) / ranked.length;
+      return {
+        utility: 0.5 * max + 0.3 * second + 0.2 * mean,
+        uncertainty: ranked.slice(0, 3).reduce((sum, paper) => sum + paper.sigma, 0) / Math.min(3, ranked.length),
+      };
+    }).sort((a, b) => b.utility - a.utility);
+    if (blocks[0].utility - blocks[1].utility > ((blocks[0].uncertainty + blocks[1].uncertainty) / 2) * 0.25) oralResolved += 1;
+  }
+  let posterTotal = 0; let posterResolved = 0;
+  for (const blockMap of posterBlocks.values()) {
+    const ranked = [...blockMap.values()].sort(comparePapers);
+    if (ranked.length <= state.posterTarget) continue;
+    posterTotal += 1;
+    const upper = ranked[state.posterTarget - 1]; const lower = ranked[state.posterTarget];
+    if (upper.mu - lower.mu > ((upper.sigma + lower.sigma) / 2) * 0.15) posterResolved += 1;
+  }
+  return { oralTotal, oralResolved, posterTotal, posterResolved };
+}
+
+function renderSmartProgress() {
+  const progress = preferenceProgress(preferenceBundle, state, preferenceModel) || {
+    stage: "Discover", comparisons: state.history.length, favorites: selectedFavoriteIds().length,
+    coveredClusters: 0, clusterCount: 0, coverage: 0,
+  };
+  const percent = Math.round(progress.coverage * 100);
+  const decisions = decisionProgress();
+  const target = state.smartTarget
+    ? `${state.smartTarget.kind === "oral" ? "Oral slot" : "Poster block"}: ${state.smartTarget.key.replace("|||", " · ")}`
+    : "Automatic: discovery, schedule decisions, and exploration";
+  el("smartProgress").innerHTML = `
+    <div class="progress-head"><div><span class="stage-badge">${esc(progress.stage)}</span><strong> Smart ranking</strong></div><button class="btn secondary" id="clearSmartTarget" ${state.smartTarget ? "" : "hidden"}>Return to automatic</button></div>
+    <div class="progress-grid">
+      <div><strong>${progress.favorites}</strong><span>favorites</span></div>
+      <div><strong>${progress.comparisons}</strong><span>answered comparisons</span></div>
+      <div><strong>${progress.coveredClusters}/${progress.clusterCount || "—"}</strong><span>semantic areas sampled</span></div>
+      <div><strong>${percent}%</strong><span>preference coverage</span></div>
+      <div><strong>${decisions.oralResolved}/${decisions.oralTotal || "—"}</strong><span>oral slots resolved</span></div>
+      <div><strong>${decisions.posterResolved}/${decisions.posterTotal || "—"}</strong><span>poster blocks stable</span></div>
+    </div>
+    <div class="progress-bar" aria-label="Preference coverage ${percent}%"><span style="width:${percent}%"></span></div>
+    <div class="small">Current target: ${esc(target)}. ${progress.favorites < 5 && progress.comparisons < 10 ? "Tip: star 5–15 promising papers for a faster start." : "Questions now favor unresolved schedule decisions while reserving some exploration."} Predictions are guidance; stars and direct reviews remain visible.</div>`;
+  el("clearSmartTarget")?.addEventListener("click", () => {
+    state.smartTarget = null; persistState(); rebuildFiltered();
+  });
 }
 
 function normalized(values, value) {
@@ -502,13 +666,20 @@ function renderOralSchedule() {
     const slotHtml = byDate.get(day).sort((a, b) => parseStartMinutes(a.time) - parseStartMinutes(b.time)).map((slot) => {
       const blocks = [...slot.rooms.entries()].map(([room, roomPapers]) => {
         const ranked = roomPapers.slice().sort(comparePapers);
-        return { room, papers: ranked, max: ranked[0]?.mu ?? DEFAULT_MU, mean: ranked.reduce((sum, paper) => sum + paper.mu, 0) / ranked.length };
+        const max = ranked[0]?.mu ?? DEFAULT_MU;
+        const second = ranked[1]?.mu ?? max;
+        const mean = ranked.reduce((sum, paper) => sum + paper.mu, 0) / ranked.length;
+        const utility = 0.5 * max + 0.3 * second + 0.2 * mean;
+        const uncertainty = ranked.slice(0, 3).reduce((sum, paper) => sum + paper.sigma, 0) / Math.min(3, ranked.length);
+        return { room, papers: ranked, max, mean, utility, uncertainty };
       });
-      const maxValues = blocks.map((block) => block.max); const means = blocks.map((block) => block.mean);
-      blocks.forEach((block) => { block.score = 0.65 * normalized(maxValues, block.max) + 0.35 * normalized(means, block.mean); });
-      blocks.sort((a, b) => b.score - a.score);
-      const rows = blocks.map((block, index) => `<tr><td>${index === 0 ? "Primary" : index === 1 ? "Backup" : index + 1}</td><td>${esc(block.room)}</td><td>${block.score.toFixed(3)}</td><td>${block.max.toFixed(1)}</td><td>${block.mean.toFixed(1)}</td><td>${block.papers.slice(0, 4).map((paper) => esc(paper.title)).join(" · ")}</td></tr>`).join("");
-      return `<details class="schedule-slot" open><summary class="schedule-slot-title">${esc(slot.time)}</summary><table class="schedule-table"><thead><tr><th>Pick</th><th>Room</th><th>Score</th><th>Max μ</th><th>Mean μ</th><th>Top papers</th></tr></thead><tbody>${rows}</tbody></table></details>`;
+      blocks.sort((a, b) => b.utility - a.utility);
+      const gap = blocks.length > 1 ? blocks[0].utility - blocks[1].utility : Infinity;
+      const uncertainty = blocks.length > 1 ? (blocks[0].uncertainty + blocks[1].uncertainty) / 2 : 1;
+      const confidence = gap === Infinity ? "high" : gap > uncertainty * 0.25 ? "high" : gap > uncertainty * 0.1 ? "medium" : "unresolved";
+      const rows = blocks.map((block, index) => `<tr><td>${index === 0 ? "Primary" : index === 1 ? "Backup" : index + 1}</td><td>${esc(block.room)}</td><td>${block.utility.toFixed(1)}</td><td>${block.papers.filter((paper) => paper.favorite).length || "—"}</td><td>${block.papers.slice(0, 4).map((paper) => `${favoriteButton(paper.id, "inline-star")} ${esc(paper.title)}`).join("<br>")}</td></tr>`).join("");
+      const key = `${slot.date}|||${slot.time}`;
+      return `<details class="schedule-slot" open><summary class="schedule-slot-title"><span>${esc(slot.time)} · <span class="confidence ${confidence}">${confidence}</span></span><button class="btn secondary compact-action" type="button" data-focus-kind="oral" data-focus-key="${esc(key)}">Resolve this slot</button></summary><table class="schedule-table"><thead><tr><th>Pick</th><th>Room</th><th>Room utility</th><th>Favorites</th><th>Top papers</th></tr></thead><tbody>${rows}</tbody></table></details>`;
     }).join("");
     return `<details class="schedule-day" open><summary class="schedule-day-head">${esc(day)}</summary>${slotHtml}</details>`;
   }).join("");
@@ -524,7 +695,7 @@ function renderOrderSchedule(records) {
   }
   const rows = [...groups.values()].sort((a, b) => dateSort(a.date) - dateSort(b.date) || parseStartMinutes(a.time) - parseStartMinutes(b.time) || Number(a.order) - Number(b.order)).map((group) => {
     const ranked = group.papers.sort(comparePapers); const best = ranked[0]; const backup = ranked[1];
-    return `<tr><td>${esc(group.date)}</td><td>${esc(group.time)}</td><td>${esc(group.order)}</td><td>${esc(best?.title || "—")}</td><td>${esc(best?.oral?.location || "—")}</td><td>${esc(backup?.title || "—")}</td></tr>`;
+    return `<tr><td>${esc(group.date)}</td><td>${esc(group.time)}</td><td>${esc(group.order)}</td><td>${best ? `${favoriteButton(best.id, "inline-star")} ${esc(best.title)}` : "—"}</td><td>${esc(best?.oral?.location || "—")}</td><td>${backup ? `${favoriteButton(backup.id, "inline-star")} ${esc(backup.title)}` : "—"}</td></tr>`;
   }).join("");
   el("schedule").innerHTML = rows ? `<table class="schedule-table"><thead><tr><th>Day</th><th>Block</th><th>Order</th><th>Top talk</th><th>Room</th><th>Backup</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="small">No presentation-order data is available.</div>';
 }
@@ -547,15 +718,24 @@ function renderPosters() {
   root.innerHTML = [...groups.keys()].sort((a, b) => dateSort(a) - dateSort(b)).map((day) => {
     const blocks = [...groups.get(day).entries()].sort(([a], [b]) => parseStartMinutes(a) - parseStartMinutes(b)).map(([time, items]) => {
       items.sort((a, b) => (rank.get(a.paper.id) || Infinity) - (rank.get(b.paper.id) || Infinity));
-      const rows = items.map(({ paper, presentation }) => `<tr><td>${rank.get(paper.id) || "—"}</td><td>${esc(paper.id)}</td><td>${esc(paper.title)}</td><td>${esc(paper.track || paper.cat1 || "—")}</td><td>${esc(presentation.location || "—")}</td><td>${paper.mu.toFixed(1)}</td></tr>`).join("");
-      return `<details class="poster-slot" open><summary class="poster-slot-head">${esc(time)} <span class="small">(${items.length})</span></summary><table class="poster-table"><thead><tr><th>Rank</th><th>ID</th><th>Title</th><th>Track/topic</th><th>Location</th><th>μ</th></tr></thead><tbody>${rows}</tbody></table></details>`;
+      const target = Math.min(state.posterTarget, items.length);
+      const rows = items.map(({ paper, presentation }, index) => {
+        let status = "Optional";
+        if (paper.favorite) status = "Must visit";
+        else if (index < Math.min(3, target) && (paper.n >= 2 || paper.modelConfidence >= 0.55)) status = "Must visit";
+        else if (index < target) status = "Likely visit";
+        else if (index < target + 3 && paper.sigma > 180) status = "Explore";
+        return `<tr><td>${favoriteButton(paper.id)}</td><td><span class="visit-status ${status.toLowerCase().replaceAll(" ", "-")}">${status}</span></td><td>${rank.get(paper.id) || "—"}</td><td>${esc(paper.id)}</td><td>${esc(paper.title)}</td><td>${esc(presentation.location || "—")}</td><td>${paper.mu.toFixed(1)} ± ${paper.sigma.toFixed(0)}</td></tr>`;
+      }).join("");
+      const key = `${day}|||${time}`;
+      return `<details class="poster-slot" open><summary class="poster-slot-head"><span>${esc(time)} <span class="small">(${items.length} papers · target ${target})</span></span><button class="btn secondary compact-action" type="button" data-focus-kind="poster" data-focus-key="${esc(key)}">Refine this block</button></summary><table class="poster-table"><thead><tr><th>Favorite</th><th>Plan</th><th>Rank</th><th>ID</th><th>Title</th><th>Location</th><th>Score</th></tr></thead><tbody>${rows}</tbody></table></details>`;
     }).join("");
     return `<details class="poster-day" open><summary class="poster-day-head">${esc(day)}</summary>${blocks}</details>`;
   }).join("");
 }
 
 function renderAll() {
-  renderStats(); renderOverview(); renderLeaderboard(); renderOralSchedule(); renderPosters(); nextPair();
+  renderStats(); renderOverview(); renderSmartProgress(); renderLeaderboard(); renderOralSchedule(); renderPosters(); nextPair();
 }
 
 function fillSelect(id, label, values) {
@@ -601,7 +781,8 @@ async function importStateBackup(file) {
   const imported = parseStateBackup(JSON.parse(await file.text()));
   const rated = Object.values(imported.ratings).filter((rating) => Number(rating.n) > 0).length;
   const predicted = Object.keys(imported.priors).length;
-  const prompt = `Import ${imported.history.length} comparisons, ${rated} rated papers, and ${predicted} predicted priors for ${config.short_name}? This replaces the rankings currently stored in this browser.`;
+  const favorites = selectedFavoriteIds(imported).length;
+  const prompt = `Import ${imported.history.length} comparisons, ${rated} rated papers, ${predicted} predicted priors, and ${favorites} favorites for ${config.short_name}? This replaces the rankings currently stored in this browser.`;
   if (!confirm(prompt)) return;
   const importedIds = new Set(imported.history.map((entry) => entry.id));
   const replacedIds = state.history.map((entry) => entry.id).filter((id) => !importedIds.has(id));
@@ -616,15 +797,15 @@ async function importStateBackup(file) {
   syncControls();
   persistState();
   rebuildFiltered();
-  showMessage(`Imported ${state.history.length} comparisons, ${rated} rated papers, and ${predicted} predicted priors.`);
+  showMessage(`Imported ${state.history.length} comparisons, ${rated} rated papers, ${predicted} predicted priors, and ${favorites} favorites.`);
 }
 
 function exportCSV() {
   const ranked = papers.map(hydrate).sort(comparePapers); const rank = new Map(ranked.map((paper, index) => [paper.id, index + 1]));
-  const headers = ["paper_id", "title", "authors", "track", "primary_category", "secondary_category", "presentations", "pref_mu", "pref_sigma", "pref_rank", "n_matches", "wins", "losses", "ties"];
+  const headers = ["paper_id", "title", "authors", "track", "primary_category", "secondary_category", "presentations", "favorite", "pref_mu", "pref_sigma", "model_confidence", "pref_rank", "n_matches", "wins", "losses", "ties"];
   const records = papers.map((paper) => {
-    const rating = readRating(String(paper.id));
-    return { paper_id: paper.id, title: paper.title, authors: (paper.authors || []).join("; "), track: paper.track || "", primary_category: paper.primary_category || "", secondary_category: paper.secondary_category || "", presentations: (paper.presentations || []).map(presentationLabel).join(" | "), pref_mu: rating.mu, pref_sigma: rating.sigma, pref_rank: rank.get(String(paper.id)), n_matches: rating.n, wins: rating.wins, losses: rating.losses, ties: rating.ties };
+    const hydrated = hydrate(paper);
+    return { paper_id: paper.id, title: paper.title, authors: (paper.authors || []).join("; "), track: paper.track || "", primary_category: paper.primary_category || "", secondary_category: paper.secondary_category || "", presentations: (paper.presentations || []).map(presentationLabel).join(" | "), favorite: hydrated.favorite, pref_mu: hydrated.mu, pref_sigma: hydrated.sigma, model_confidence: hydrated.modelConfidence, pref_rank: rank.get(String(paper.id)), n_matches: hydrated.n, wins: hydrated.wins, losses: readRating(String(paper.id)).losses, ties: readRating(String(paper.id)).ties };
   });
   download(`${config.id}-scored.csv`, toCSV(headers, records), "text/csv");
 }
@@ -641,20 +822,40 @@ function activateTab(tab) {
 
 function wireEvents() {
   document.querySelectorAll(".tab").forEach((button) => button.addEventListener("click", () => activateTab(button.dataset.tab)));
-  for (const id of ["search", "trackFilter", "categoryFilter", "dayFilter", "locationFilter", "hasWinsOnly"]) el(id).addEventListener(id === "search" ? "input" : "change", rebuildFiltered);
-  for (const id of ["mode", "resolveTieNMatches", "muPriority", "winsOnly", "topN"]) el(id).addEventListener("change", () => {
-    state[id] = id === "topN" ? Number(el(id).value) : id === "winsOnly" ? el(id).checked : el(id).value;
+  for (const id of ["search", "trackFilter", "categoryFilter", "dayFilter", "locationFilter", "hasWinsOnly", "favoritesOnly"]) el(id).addEventListener(id === "search" ? "input" : "change", rebuildFiltered);
+  for (const id of ["mode", "resolveTieNMatches", "muPriority", "winsOnly", "topN", "posterTarget"]) el(id).addEventListener("change", () => {
+    state[id] = ["topN", "posterTarget"].includes(id) ? Number(el(id).value) : id === "winsOnly" ? el(id).checked : el(id).value;
+    if (id === "mode" && state.mode !== "smart") state.smartTarget = null;
     persistState(); rebuildFiltered();
+  });
+  document.addEventListener("click", (event) => {
+    const favorite = event.target.closest("[data-favorite-id]");
+    if (favorite) {
+      event.preventDefault(); event.stopPropagation(); toggleFavorite(favorite.dataset.favoriteId); return;
+    }
+    const focus = event.target.closest("[data-focus-kind]");
+    if (focus) {
+      event.preventDefault(); event.stopPropagation();
+      state.mode = "smart";
+      state.smartTarget = { kind: focus.dataset.focusKind, key: focus.dataset.focusKey };
+      persistState(); syncControls(); rebuildFiltered(); activateTab("ranking");
+      showMessage(`Smart ranking is now focused on ${focus.dataset.focusKey.replace("|||", " · ")}.`);
+    }
+  });
+  window.addEventListener("message", (event) => {
+    if (event.origin !== window.location.origin || event.data?.type !== "favorite_update") return;
+    if (event.data?.payload?.paperId) toggleFavorite(String(event.data.payload.paperId), Boolean(event.data.payload.selected));
   });
   el("scheduleByPresentationOrder").addEventListener("change", () => { state.scheduleByPresentationOrder = el("scheduleByPresentationOrder").checked; persistState(); renderOralSchedule(); });
   document.querySelectorAll("[data-vote]").forEach((button) => button.addEventListener("click", () => vote(button.dataset.vote)));
   el("btnUndo").addEventListener("click", undo);
   el("btnReset").addEventListener("click", () => {
-    if (!confirm(`Reset all ${config.short_name} ratings and history?`)) return;
+    if (!confirm(`Fully reset ${config.short_name}? This clears comparisons, ratings, imported priors, favorites, model predictions, and ranking settings for the current account and browser.`)) return;
     const resetAt = new Date().toISOString();
     const tombstones = [...new Set([...state.history_tombstones, ...state.history.map((entry) => entry.id)])];
-    state = { ...defaultState(), priors: state.priors, history_tombstones: tombstones, reset_at: resetAt };
+    state = { ...defaultState(), history_tombstones: tombstones, reset_at: resetAt };
     syncControls(); persistState(); rebuildFiltered();
+    showMessage(`Fully reset ${config.short_name}. Model-scored papers, favorites, priors, and comparisons are now cleared.`);
   });
   el("btnExportState").addEventListener("click", exportStateBackup);
   el("btnExportCSV").addEventListener("click", exportCSV);
@@ -672,7 +873,7 @@ function wireEvents() {
 
 function syncControls() {
   el("mode").value = state.mode; el("resolveTieNMatches").value = state.resolveTieNMatches; el("muPriority").value = state.muPriority;
-  el("winsOnly").checked = state.winsOnly; el("topN").value = state.topN; el("scheduleByPresentationOrder").checked = state.scheduleByPresentationOrder;
+  el("winsOnly").checked = state.winsOnly; el("topN").value = state.topN; el("posterTarget").value = state.posterTarget; el("scheduleByPresentationOrder").checked = state.scheduleByPresentationOrder;
 }
 
 function showMessage(message, kind = "success") {
@@ -691,6 +892,7 @@ function refreshStateUI() {
 function stateHasRankings(value) {
   return Object.keys(value.priors).length > 0
     || value.history.length > 0
+    || selectedFavoriteIds(value).length > 0
     || Object.values(value.ratings).some((rating) => Number(rating.n) > 0);
 }
 
@@ -722,7 +924,7 @@ function changeCloudUser(user) {
   } else if (guestOwner === user.uid) {
     state = normalizeState(guestState);
     persistState({ touch: false, sync: false });
-  } else if (!guestOwner && stateHasRankings(guestState) && confirm(`Import this browser's ${guestState.history.length} guest comparisons and ${Object.keys(guestState.priors).length} predicted priors into ${user.email || "your account"}?`)) {
+  } else if (!guestOwner && stateHasRankings(guestState) && confirm(`Import this browser's ${guestState.history.length} guest comparisons, ${Object.keys(guestState.priors).length} predicted priors, and ${selectedFavoriteIds(guestState).length} favorites into ${user.email || "your account"}?`)) {
     state = normalizeState(guestState);
     localStorage.setItem(guestOwnerKey(), user.uid);
     persistState({ touch: true, sync: false });
@@ -762,9 +964,9 @@ async function startCloudSync() {
 
 async function initialize() {
   try {
-    const [configResponse, dataResponse] = await Promise.all([fetch("./data/conference.json"), fetch("./data/papers.json")]);
-    if (!configResponse.ok || !dataResponse.ok) throw new Error("Could not load conference data.");
-    config = await configResponse.json(); dataset = await dataResponse.json(); papers = dataset.papers || [];
+    const [configResponse, dataResponse, preferenceResponse] = await Promise.all([fetch("./data/conference.json"), fetch("./data/papers.json"), fetch("./data/preference-features.json")]);
+    if (!configResponse.ok || !dataResponse.ok || !preferenceResponse.ok) throw new Error("Could not load conference data or preference features.");
+    config = await configResponse.json(); dataset = await dataResponse.json(); preferenceBundle = await preferenceResponse.json(); papers = dataset.papers || [];
     state = loadState(); applyConfiguration(); wireEvents(); syncControls(); populateFilters(); rebuildFiltered();
     await startCloudSync();
   } catch (error) { showError(error.message || String(error)); }

@@ -19,13 +19,18 @@ class StaticSiteContractTests(unittest.TestCase):
             with self.subTest(conference=conference_id):
                 base = ROOT / "docs" / conference_id
                 for relative in (
-                    "index.html", "assets/js/app.js", "assets/js/cloud-sync.js", "assets/js/merge-comparisons.js", "assets/js/sync-fingerprint.js", "assets/js/rating.js", "assets/css/styles.css",
-                    "viz/index.html", "viz/app.js", "data/conference.json", "data/papers.json", "data/projection.json",
+                    "index.html", "assets/js/app.js", "assets/js/cloud-sync.js", "assets/js/merge-comparisons.js", "assets/js/sync-fingerprint.js", "assets/js/rating.js", "assets/js/preference-model.js", "assets/css/styles.css",
+                    "viz/index.html", "viz/app.js", "data/conference.json", "data/papers.json", "data/projection.json", "data/preference-features.json",
                 ):
                     self.assertTrue((base / relative).exists(), relative)
                 projection = json.loads((base / "data" / "projection.json").read_text(encoding="utf-8"))
                 self.assertEqual(expected, projection["n_points"])
                 self.assertEqual({"pca", "tsne", "umap"}, set(projection["methods"]))
+                preference = json.loads((base / "data" / "preference-features.json").read_text(encoding="utf-8"))
+                self.assertEqual(expected, len(preference["ids"]))
+                self.assertEqual(expected, len(preference["features"]))
+                self.assertGreaterEqual(preference["cluster_count"], 8)
+                self.assertEqual(preference["dimensions"], len(preference["features"][0]))
 
     def test_cloud_sync_is_secure_and_configured(self):
         config = json.loads((ROOT / "src" / "web" / "firebase-config.json").read_text(encoding="utf-8"))
@@ -39,7 +44,7 @@ class StaticSiteContractTests(unittest.TestCase):
 
     def test_rendering_does_not_mutate_ranking_state(self):
         source = (ROOT / "src" / "web" / "app" / "app.js").read_text(encoding="utf-8")
-        self.assertIn("const rating = readRating(String(paper.id))", source)
+        self.assertIn("const baseRating = readRating(paperId)", source)
         self.assertNotIn("const rating = getRating(String(paper.id))", source)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is not installed")
@@ -56,6 +61,12 @@ if (!merged.history_tombstones.includes("b")) throw new Error("undo tombstone wa
 if (merged.localIsNewer) throw new Error("newer state selection failed");
 const reset = mergeComparisonData(local, {...remote, reset_at: "2026-01-02T12:00:00Z"});
 if (reset.history.map((item) => item.id).join(",") !== "c") throw new Error("reset marker failed");
+const favorites = mergeFavorites(
+  {paper: {selected: true, modified_at: "2026-01-01T00:00:00Z"}, local: {selected: true, modified_at: ""}},
+  {paper: {selected: false, modified_at: "2026-01-02T00:00:00Z"}, remote: {selected: true, modified_at: ""}},
+);
+if (favorites.paper.selected !== false) throw new Error("newer favorite removal was lost");
+if (!favorites.local.selected || !favorites.remote.selected) throw new Error("one-sided favorite was lost");
 """
         subprocess.run(["node", "--input-type=module", "--eval", source + assertions], check=True, capture_output=True, text=True)
 
@@ -107,10 +118,64 @@ if (syncFingerprint(browser) === syncFingerprint({...firestore, schema_version: 
         self.assertIn("priors: {}", app_source)
         self.assertIn("target.priors?.[id]", app_source)
         self.assertIn("effectiveRatings(state)", app_source)
-        self.assertIn('["Predicted", Object.keys(state.priors).length]', app_source)
+        self.assertIn('Object.keys(state.priors).length', app_source)
+        self.assertIn('["Model-scored",', app_source)
         self.assertIn("stateHasRankings", app_source)
-        self.assertIn("priors: state.priors", app_source)
+        self.assertIn("target.priors?.[id]", app_source)
         self.assertIn("parsed?.priors || {}", viz_source)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is not installed")
+    def test_favorites_seed_the_online_preference_model(self):
+        module = (ROOT / "src" / "web" / "shared" / "preference-model.js").as_uri()
+        assertions = f'''\nimport {{trainPreferenceModel, blendPreferencePrediction}} from "{module}";
+const bundle = {{dimensions: 2, cluster_count: 3, ids: ["a", "b", "c", "d"], clusters: [0, 0, 1, 2], features: [[1,0],[0.9,0.1],[-1,0],[0,1]]}};
+const state = {{favorites: {{a: {{selected: true, modified_at: "2026-01-01"}}}}, history: []}};
+const model = trainPreferenceModel(bundle, state);
+if (!model.hasSignal) throw new Error("favorite did not seed model");
+if (!(model.predictions.get("a").mu > model.predictions.get("c").mu)) throw new Error("favorite direction was not learned");
+if (!(model.predictions.get("b").mu > model.predictions.get("c").mu)) throw new Error("favorite did not generalize semantically");
+const blended = blendPreferencePrediction({{mu:1500,sigma:350,n:0,wins:0,losses:0,ties:0}}, model.predictions.get("a"));
+if (!blended.predicted || blended.mu <= 1500) throw new Error("prediction was not blended");
+'''
+        subprocess.run(["node", "--input-type=module", "--eval", assertions], check=True, capture_output=True, text=True)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is not installed")
+    def test_smart_selector_can_target_an_oral_conflict(self):
+        module = (ROOT / "src" / "web" / "shared" / "selector.js").as_uri()
+        assertions = f'''\nimport {{chooseNextPair}} from "{module}";
+const oral = (location) => [{{type:"oral",date:"Tuesday",time:"14:00",location}}];
+const items = [
+  {{id:"a",mu:1510,sigma:300,n:0,cluster:0,presentations:oral("Room A")}},
+  {{id:"b",mu:1508,sigma:300,n:0,cluster:1,presentations:oral("Room B")}},
+  {{id:"c",mu:1400,sigma:200,n:1,cluster:2,presentations:oral("Room A")}},
+];
+const state = {{mode:"smart",smartTarget:{{kind:"oral",key:"Tuesday|||14:00"}},history:[],lastPair:[],favorites:{{}},posterTarget:10}};
+const result = chooseNextPair(items,state);
+if (!result || result.target.kind !== "oral") throw new Error("oral target was ignored");
+if (!result.reason.includes("room choice")) throw new Error("selection reason is missing");
+if (result.pair[0].id === result.pair[1].id) throw new Error("invalid pair");
+'''
+        subprocess.run(["node", "--input-type=module", "--eval", assertions], check=True, capture_output=True, text=True)
+
+    def test_favorites_are_available_across_workspaces(self):
+        app_source = (ROOT / "src" / "web" / "app" / "app.js").read_text(encoding="utf-8")
+        shell_html = (ROOT / "src" / "web" / "app" / "index.html").read_text(encoding="utf-8")
+        viz_source = (ROOT / "src" / "web" / "viz" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("favorites: {}", app_source)
+        self.assertIn("modified_at", app_source)
+        self.assertIn('data-tab="ranking">Smart Ranking', shell_html)
+        self.assertIn('id="favoritesOnly"', shell_html)
+        self.assertIn("favorite_update", viz_source)
+
+    def test_full_reset_clears_all_preference_signals(self):
+        app_source = (ROOT / "src" / "web" / "app" / "app.js").read_text(encoding="utf-8")
+        shell_html = (ROOT / "src" / "web" / "app" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('id="btnReset">Full reset', shell_html)
+        self.assertIn("This clears comparisons, ratings, imported priors, favorites, model predictions", app_source)
+        self.assertIn("state = { ...defaultState(), history_tombstones: tombstones, reset_at: resetAt }", app_source)
+        self.assertIn("localResetIsNewer", app_source)
+        self.assertIn("remoteResetIsNewer", app_source)
+        self.assertNotIn("state = { ...defaultState(), priors: state.priors, favorites: state.favorites", app_source)
 
     def test_embedding_workspace_prioritizes_the_plot(self):
         shell_html = (ROOT / "src" / "web" / "app" / "index.html").read_text(encoding="utf-8")
@@ -133,6 +198,12 @@ if (syncFingerprint(browser) === syncFingerprint({...firestore, schema_version: 
         self.assertIn("showlegend: false", viz_source)
         self.assertIn("renderCategoryLegend", viz_source)
         self.assertIn("if (layout.classList.contains(className) === collapsed) return;", viz_source)
+
+    def test_normal_builds_preserve_checked_in_projections(self):
+        source = (ROOT / "src" / "pipeline" / "build.py").read_text(encoding="utf-8")
+        self.assertIn('"--rebuild-projections"', source)
+        self.assertIn("cached_projection is not None and not rebuild_projection", source)
+        self.assertIn("projection_path.write_bytes(cached_projection)", source)
 
     def test_generated_web_assets_match_sources(self):
         mappings = {
@@ -158,6 +229,7 @@ if (syncFingerprint(browser) === syncFingerprint({...firestore, schema_version: 
             ROOT / "src" / "web" / "viz" / "app.js",
             ROOT / "src" / "web" / "shared" / "rating.js",
             ROOT / "src" / "web" / "shared" / "selector.js",
+            ROOT / "src" / "web" / "shared" / "preference-model.js",
         ):
             subprocess.run(["node", "--check", str(path)], check=True, capture_output=True, text=True)
 
