@@ -80,6 +80,7 @@ function requestFavoriteToggle(paperId) {
   renderSelectionTable();
   renderNeighbors(state.lastNeighbors);
   if (state.currentClickedPaperId === String(paperId)) updateDetailFavoriteButton();
+  if (state.currentPoints.length > 0) renderPlot(state.currentPoints, state.lastPlotMeta.colorBy, state.lastPlotMeta.mode);
 }
 
 function buildRankMap() {
@@ -572,11 +573,12 @@ function buildProjectPayload() {
   return payload;
 }
 
-function pointHoverTemplate(mode) {
+function pointHoverTemplate(mode, favorite = false) {
+  const favoriteLabel = favorite ? '<br>★ Favorite' : '';
   if (mode === 'session') {
-    return '<b>%{customdata[1]}</b><br>paper_id: %{customdata[0]}<br>rank: %{customdata[6]}<br>Room: %{customdata[3]}<extra></extra>';
+    return `<b>%{customdata[1]}</b><br>paper_id: %{customdata[0]}<br>rank: %{customdata[6]}<br>Room: %{customdata[3]}${favoriteLabel}<extra></extra>`;
   }
-  return '<b>%{customdata[1]}</b><br>paper_id: %{customdata[0]}<br>rank: %{customdata[6]}<extra></extra>';
+  return `<b>%{customdata[1]}</b><br>paper_id: %{customdata[0]}<br>rank: %{customdata[6]}${favoriteLabel}<extra></extra>`;
 }
 
 function toTableRowFromPoint(point, rankMap = null) {
@@ -622,14 +624,16 @@ function buildTraces(points, mode, colorBy) {
   const rankMap = buildRankMap();
 
   [...grouped.entries()].forEach(([category, items]) => {
+    const regularItems = items.filter((point) => !isFavorite(point.paper_id));
+    if (regularItems.length === 0) return;
     traces.push({
       type: 'scatter',
       mode: 'markers',
       name: String(category),
-      x: items.map((p) => p.x),
-      y: items.map((p) => p.y),
-      text: items.map((p) => p.title),
-      customdata: items.map((p) => [
+      x: regularItems.map((p) => p.x),
+      y: regularItems.map((p) => p.y),
+      text: regularItems.map((p) => p.title),
+      customdata: regularItems.map((p) => [
         p.paper_id,
         p.title,
         p.session,
@@ -641,13 +645,45 @@ function buildTraces(points, mode, colorBy) {
       hovertemplate: pointHoverTemplate(mode),
       marker: {
         size: 8,
-        opacity: items.map((p) => opacityById.get(p.paper_id) ?? 0.65),
+        opacity: regularItems.map((p) => opacityById.get(p.paper_id) ?? 0.65),
         color: getCategoryColor(category, colorBy),
       },
       visible: state.hiddenCategories.has(String(category)) ? false : true,
       showlegend: false,
     });
   });
+
+  const favorites = points.filter((point) => (
+    isFavorite(point.paper_id)
+    && !state.hiddenCategories.has(String(point.color_value || 'Unknown'))
+  ));
+  if (favorites.length > 0) {
+    traces.push({
+      type: 'scatter',
+      mode: 'markers',
+      name: 'Favorites',
+      x: favorites.map((point) => point.x),
+      y: favorites.map((point) => point.y),
+      customdata: favorites.map((point) => [
+        point.paper_id,
+        point.title,
+        point.session,
+        point.room_location,
+        point.type_presentation,
+        point.attendance_type,
+        rankForPaperId(point.paper_id, rankMap) ?? '-',
+      ]),
+      hovertemplate: pointHoverTemplate(mode, true),
+      marker: {
+        symbol: 'star',
+        size: 18,
+        opacity: 1,
+        color: favorites.map((point) => getCategoryColor(point.color_value || 'Unknown', colorBy)),
+        line: { width: 2, color: '#111827' },
+      },
+      showlegend: false,
+    });
+  }
 
   const matched = points.filter((p) => p.matched && !state.hiddenCategories.has(String(p.color_value || 'Unknown')));
   if (matched.length > 0 && qs('search-mode').value === 'highlight' && qs('search-text').value.trim()) {
@@ -668,7 +704,7 @@ function buildTraces(points, mode, colorBy) {
       ]),
       hovertemplate: pointHoverTemplate(mode),
       marker: {
-        size: 12,
+        size: 24,
         color: 'rgba(0,0,0,0)',
         line: { width: 2, color: '#d92d20' },
       },
@@ -1231,6 +1267,7 @@ async function init() {
     }
 
     await runProjection();
+    window.parent.postMessage({ type: 'viz_ready' }, window.location.origin);
   } catch (err) {
     setStatus(err.message, true);
   }
@@ -1254,9 +1291,16 @@ window.addEventListener('message', (event) => {
     return;
   }
   if (data.type !== 'ranking_state_update') return;
+  let rankingStateChanged = false;
   if (data.payload?.ratings && typeof data.payload.ratings === 'object') {
     state.ratings = data.payload.ratings;
-    if (data.payload?.favorites && typeof data.payload.favorites === 'object') state.favorites = data.payload.favorites;
+    rankingStateChanged = true;
+  }
+  if (data.payload?.favorites && typeof data.payload.favorites === 'object') {
+    state.favorites = data.payload.favorites;
+    rankingStateChanged = true;
+  }
+  if (rankingStateChanged) {
     renderSelectionTable();
     if (state.lastNeighbors.length > 0) renderNeighbors(state.lastNeighbors);
     if (state.currentPoints.length > 0) {

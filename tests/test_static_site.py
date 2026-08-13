@@ -167,6 +167,17 @@ if (result.pair[0].id === result.pair[1].id) throw new Error("invalid pair");
         self.assertIn('id="favoritesOnly"', shell_html)
         self.assertIn("favorite_update", viz_source)
 
+    def test_embedding_favorites_use_star_markers(self):
+        app_source = (ROOT / "src" / "web" / "app" / "app.js").read_text(encoding="utf-8")
+        viz_source = (ROOT / "src" / "web" / "viz" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("name: 'Favorites'", viz_source)
+        self.assertIn("symbol: 'star'", viz_source)
+        self.assertIn("const regularItems = items.filter((point) => !isFavorite(point.paper_id));", viz_source)
+        self.assertIn("pointHoverTemplate(mode, true)", viz_source)
+        self.assertIn("window.parent.postMessage({ type: 'viz_ready' }", viz_source)
+        self.assertIn('event.data?.type === "viz_ready"', app_source)
+        self.assertIn("size: 24", viz_source)
+
     def test_full_reset_clears_all_preference_signals(self):
         app_source = (ROOT / "src" / "web" / "app" / "app.js").read_text(encoding="utf-8")
         shell_html = (ROOT / "src" / "web" / "app" / "index.html").read_text(encoding="utf-8")
