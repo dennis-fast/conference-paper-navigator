@@ -153,6 +153,7 @@
           <table id="selection-table">
             <thead>
               <tr>
+                <th>favorite</th>
                 <th data-sort="rank">rank</th>
                 <th data-sort="paper_id">paper_id</th>
                 <th data-sort="title">title</th>
@@ -179,6 +180,7 @@
           <h2>Paper details</h2>
           <div id="details-empty">Click a point to inspect details.</div>
           <div id="details-content" class="hidden">
+            <button id="detail-favorite-btn" class="favorite-viz" type="button">☆ Add to favorites</button>
             <div><strong>Title:</strong> <span id="detail-title"></span></div>
             <div><strong>paper_id:</strong> <span id="detail-paper-id"></span></div>
             <div><strong>Session:</strong> <span id="detail-session"></span></div>
@@ -197,6 +199,7 @@
           <table id="nn-table">
             <thead>
               <tr>
+                <th>favorite</th>
                 <th>rank</th>
                 <th>paper_id</th>
                 <th>title</th>

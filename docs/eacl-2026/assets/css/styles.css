@@ -36,7 +36,7 @@ body.viz-active .wrap{max-width:none}
 .filters{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .filters input:not([type="checkbox"]),.filters select{background:var(--card);border:1px solid var(--line);color:var(--text);border-radius:10px;padding:9px 10px;font-size:13px;min-width:170px}
 .filters input#search{min-width:320px}
-.filters #topN{min-width:90px;width:90px}
+.filters #topN,.filters #posterTarget{min-width:76px;width:76px}
 .top-filter-check{
   display:flex;
   align-items:center;
@@ -103,6 +103,11 @@ body.viz-active .wrap{max-width:none}
 .paper{padding:10px;border-top:1px solid var(--line)}
 .paper:first-child{border-top:none}
 .paper .top{font-weight:800}
+.paper-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.favorite-btn{appearance:none;border:1px solid var(--line);background:rgba(255,255,255,.04);color:#fbbf24;border-radius:9px;width:34px;height:34px;min-width:34px;padding:0;font-size:22px;line-height:1;cursor:pointer}
+.favorite-btn:hover{background:rgba(251,191,36,.12);border-color:#a16207}
+.favorite-btn[aria-pressed="true"]{background:rgba(251,191,36,.16);border-color:#d97706}
+.favorite-btn.inline-star{display:inline-flex;align-items:center;justify-content:center;width:25px;height:25px;min-width:25px;font-size:17px;vertical-align:middle}
 .paper .meta{display:flex;flex-wrap:wrap;gap:8px;color:var(--muted);font-size:12px;margin-top:5px}
 .paper .abs{margin-top:8px;font-size:13px;line-height:1.45}
 .paper .abs summary{cursor:pointer;color:var(--muted)}
@@ -110,6 +115,7 @@ body.viz-active .wrap{max-width:none}
 
 /* Ranking */
 .arena{background:var(--card2);border:1px solid var(--line);border-radius:14px;padding:12px}
+.pair-context{display:flex;gap:9px;align-items:center;color:var(--muted);font-size:13px;margin-bottom:10px}
 .arena-head{display:flex;justify-content:space-between;gap:10px;align-items:center;margin-bottom:10px}
 .arena-title{font-weight:900}
 .arena-actions{display:flex;flex-wrap:wrap;gap:8px}
@@ -123,6 +129,7 @@ body.viz-active .wrap{max-width:none}
 .leaderboard{margin-top:10px;display:grid;gap:8px}
 .lb-row{border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.03);padding:10px 12px}
 .lb-top{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;align-items:center}
+.row-actions{display:flex;align-items:center;gap:9px}
 .lb-title{font-weight:900}
 .lb-sub{color:var(--muted);font-size:12px;margin-top:4px}
 
@@ -133,7 +140,7 @@ body.viz-active .wrap{max-width:none}
 .schedule-day-head::-webkit-details-marker{display:none}
 .schedule-slot{padding:10px 12px;border-top:1px solid var(--line)}
 .schedule-slot:first-child{border-top:none}
-.schedule-slot-title{font-weight:800;margin-bottom:8px;cursor:pointer;list-style:none}
+.schedule-slot-title{display:flex;align-items:center;justify-content:space-between;gap:10px;font-weight:800;margin-bottom:8px;cursor:pointer;list-style:none}
 .schedule-slot-title::-webkit-details-marker{display:none}
 .schedule-slot[open] .schedule-slot-title{margin-bottom:8px}
 .schedule-picks{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
@@ -152,11 +159,27 @@ body.viz-active .wrap{max-width:none}
 .poster-day-head{padding:10px 12px;cursor:pointer;font-weight:800;list-style:none}
 .poster-day-head::-webkit-details-marker{display:none}
 .poster-slot{border-top:1px solid var(--line)}
-.poster-slot-head{padding:8px 12px;cursor:pointer;font-weight:700;color:var(--text);background:rgba(255,255,255,.02);list-style:none}
+.poster-slot-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 12px;cursor:pointer;font-weight:700;color:var(--text);background:rgba(255,255,255,.02);list-style:none}
 .poster-slot-head::-webkit-details-marker{display:none}
 .poster-table{width:100%;border-collapse:collapse;font-size:12px}
 .poster-table th,.poster-table td{border-top:1px solid var(--line);padding:7px 8px;text-align:left;vertical-align:top}
 .poster-table th{color:var(--muted);font-weight:700;background:rgba(255,255,255,.02)}
+
+.compact-action{padding:5px 9px;font-size:12px;white-space:nowrap}
+.confidence,.visit-status,.stage-badge{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:3px 8px;font-size:11px;text-transform:capitalize}
+.confidence.high,.visit-status.must-visit{color:#86efac;border-color:#166534;background:rgba(22,101,52,.22)}
+.confidence.medium,.visit-status.likely-visit{color:#fde68a;border-color:#a16207;background:rgba(161,98,7,.18)}
+.confidence.unresolved,.visit-status.explore{color:#fca5a5;border-color:#991b1b;background:rgba(153,27,27,.18)}
+.visit-status.optional{color:var(--muted)}
+.stage-badge{color:#7dd3fc;border-color:#075985;background:rgba(7,89,133,.22);font-weight:800}
+.smart-progress{display:grid;gap:10px}
+.progress-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.progress-grid{display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:8px}
+.progress-grid>div{display:flex;flex-direction:column;gap:3px;padding:9px 10px;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+.progress-grid strong{font-size:18px}.progress-grid span{font-size:11px;color:var(--muted)}
+.progress-bar{height:7px;border-radius:999px;background:var(--card);overflow:hidden}.progress-bar span{display:block;height:100%;border-radius:inherit;background:#38bdf8}
+.ranking-advanced{margin-top:12px;border-top:1px solid var(--line);padding-top:9px}.ranking-advanced summary{cursor:pointer;color:var(--muted);font-size:13px;margin-bottom:8px}
+@media (max-width:700px){.progress-grid{grid-template-columns:1fr 1fr}.schedule-slot-title,.poster-slot-head{align-items:flex-start;flex-direction:column}}
 
 /* Viz */
 #vizFrame{width:100%;height:84vh;min-height:720px;border:1px solid var(--line);border-radius:10px;background:#fff}

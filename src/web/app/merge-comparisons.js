@@ -14,3 +14,15 @@ export function mergeComparisonData(local, remote) {
     localIsNewer,
   };
 }
+
+export function mergeFavorites(localFavorites = {}, remoteFavorites = {}) {
+  const favorites = {};
+  for (const paperId of new Set([...Object.keys(localFavorites), ...Object.keys(remoteFavorites)])) {
+    const local = localFavorites[paperId];
+    const remote = remoteFavorites[paperId];
+    if (!local) favorites[paperId] = remote;
+    else if (!remote) favorites[paperId] = local;
+    else favorites[paperId] = (local.modified_at || "") >= (remote.modified_at || "") ? local : remote;
+  }
+  return favorites;
+}

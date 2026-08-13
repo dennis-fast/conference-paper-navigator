@@ -59,7 +59,10 @@ tests/                    # Schema, build, and frontend contracts
 ## Browser features
 
 - paper overview with conference-derived filters
-- pairwise preference ranking with uncertainty-aware Elo updates
+- browser-trained personal preference model seeded by favorites and pairwise feedback
+- staged smart ranking: semantic discovery, schedule decisions, shortlist refinement, and exploration
+- session-aware active questions for oral room conflicts and poster must-visit cutoffs
+- uncertainty-aware Elo updates retained as direct per-paper evidence
 - conference- and user-namespaced browser state, import, and export
 - optional private cross-device synchronization with Google sign-in and Firestore
 - PCA, t-SNE, and UMAP projections with nearest neighbours
@@ -70,9 +73,19 @@ tests/                    # Schema, build, and frontend contracts
 
 Personal ranking state always remains available in the browser. Optional Firebase sync can store a private copy for an authenticated user; it is disabled until a Firebase project is configured.
 
+### Smart ranking and favorites
+
+The build pipeline reduces the normalized SPECTER2 vectors to 48 compact preference dimensions and assigns deterministic semantic clusters. The browser downloads those static features and trains a small regularized linear model locally after every favorite or comparison. No personal preference data is sent to a model service.
+
+New users can star promising papers in the overview, embedding inspector, ranking cards, oral schedule, or poster tables. Favorites are moderate positive seeds rather than permanent score overrides. Pairwise choices then teach the model which related papers are genuinely relevant. The smart selector initially samples broad semantic areas, then prioritizes comparisons that could change an oral-room recommendation or a poster-block cutoff. It periodically explores underrepresented areas and refines the global top-N boundary.
+
+The ranking panel reports semantic coverage and decision stability. Oral recommendations combine the strongest two papers with the room mean; poster blocks distinguish must-visit favorites, likely visits, uncertain exploration candidates, and optional papers. Use **Resolve this slot** or **Refine this block** to focus subsequent comparisons on one decision.
+
+**Full reset** clears every preference signal for the current conference and account: comparisons, direct ratings, imported priors, favorites, model predictions, focused decisions, and ranking settings. A reset marker prevents an older synchronized browser or Firestore copy from restoring cleared data.
+
 ## Ranking backups
 
-Use **Export rankings** to download a JSON backup containing the conference ID, export timestamp, summary, ratings, comparison history, and ranking controls. Use **Import rankings** on another browser or device to restore it. Imports validate the schema and conference, then ask for confirmation before replacing the current rankings. Older raw state exports remain supported.
+Use **Export rankings** to download a JSON backup containing the conference ID, export timestamp, summary, favorites, ratings, comparison history, and ranking controls. Use **Import rankings** on another browser or device to restore it. Imports validate the schema and conference, then ask for confirmation before replacing the current rankings. Older raw state exports remain supported.
 
 The scored CSV is useful for analysis, but it is not a restorable backup because it does not contain comparison history. Browser storage is isolated by site origin, device, and browser profile, so export periodically if cloud sync is not configured.
 
@@ -92,7 +105,7 @@ The transfer blends ridge regression with distance-weighted semantic neighbours.
 
 ## Optional cloud synchronization
 
-The static app supports Google sign-in and Firestore without operating a custom server. Each conference state is stored at `users/{uid}/conferences/{conferenceId}` and protected by rules that compare the path UID with the authenticated user's UID. Comparison histories are merged transactionally using stable event IDs; undo and reset markers prevent removed comparisons from returning during a merge.
+The static app supports Google sign-in and Firestore without operating a custom server. Each conference state is stored at `users/{uid}/conferences/{conferenceId}` and protected by rules that compare the path UID with the authenticated user's UID. Comparison histories are merged transactionally using stable event IDs; undo and reset markers prevent removed comparisons from returning during a merge. Favorite additions and removals use per-paper timestamps so edits also merge safely across devices. Model weights are deterministically reconstructed from these signals and do not need to be synchronized.
 
 Signing out stops cloud access but keeps the last synchronized ranking available on that device. Comparisons made while signed out are merged back into Firestore when the same account signs in again. Because that local copy remains visible, clear the site's browser data after signing out on a shared device.
 
@@ -125,6 +138,12 @@ make serve
 ```
 
 Then open `http://localhost:8000/docs/`.
+
+Normal builds preserve the checked-in 2D projections so UMAP coordinates do not drift between environments. Recompute PCA, t-SNE, and UMAP only when embeddings or projection settings intentionally change:
+
+```bash
+python -m src.pipeline.build --rebuild-projections
+```
 
 ## Adding another conference
 

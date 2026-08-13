@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.preprocessing import normalize
@@ -21,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CONFERENCES_DIR = ROOT / "conferences"
 DOCS_DIR = ROOT / "docs"
 WEB_DIR = ROOT / "src" / "web"
+PREFERENCE_DIMENSIONS = 48
 
 
 def conference_ids() -> list[str]:
@@ -127,12 +129,54 @@ def build_projection(profile: dict[str, Any], dataset: dict[str, Any], embedding
     }
 
 
+def build_preference_features(profile: dict[str, Any], dataset: dict[str, Any], embeddings_path: Path) -> dict[str, Any]:
+    """Create a compact, deterministic browser-side feature bundle.
+
+    The two-dimensional projection is intentionally not reused for preference
+    learning: it discards too much semantic structure.  PCA keeps the browser
+    payload small while retaining enough of the normalized SPECTER2 space for a
+    lightweight online linear model.
+    """
+    npz = np.load(embeddings_path, allow_pickle=True)
+    ids = [str(value.decode("utf-8") if isinstance(value, bytes) else value) for value in np.asarray(npz["ids"]).reshape(-1)]
+    embeddings = np.asarray(npz["embeddings"], dtype=np.float64)
+    embedding_index = {paper_id: index for index, paper_id in enumerate(ids)}
+    paper_ids = [str(paper["id"]) for paper in dataset["papers"] if str(paper["id"]) in embedding_index]
+    vectors = normalize(np.asarray([embeddings[embedding_index[paper_id]] for paper_id in paper_ids]), norm="l2")
+
+    dimensions = max(2, min(PREFERENCE_DIMENSIONS, vectors.shape[0] - 1, vectors.shape[1]))
+    reducer = PCA(n_components=dimensions, random_state=42)
+    reduced = reducer.fit_transform(vectors)
+    reduced = normalize(reduced, norm="l2")
+
+    cluster_count = max(8, min(28, round(len(paper_ids) ** 0.5)))
+    clustering = KMeans(n_clusters=cluster_count, random_state=42, n_init=10).fit(reduced)
+    representatives: list[str] = []
+    for cluster in range(cluster_count):
+        member_indices = np.flatnonzero(clustering.labels_ == cluster)
+        distances = np.linalg.norm(reduced[member_indices] - clustering.cluster_centers_[cluster], axis=1)
+        representatives.append(paper_ids[int(member_indices[int(np.argmin(distances))])])
+
+    return {
+        "version": 1,
+        "conference_id": profile["id"],
+        "source": "l2-normalized SPECTER2 embeddings reduced with PCA",
+        "dimensions": dimensions,
+        "explained_variance": float(np.sum(reducer.explained_variance_ratio_)),
+        "cluster_count": cluster_count,
+        "ids": paper_ids,
+        "clusters": [int(value) for value in clustering.labels_],
+        "representatives": representatives,
+        "features": np.round(reduced, 6).tolist(),
+    }
+
+
 def _copy(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
 
 
-def build_conference(conference_id: str) -> None:
+def build_conference(conference_id: str, *, cached_projection: bytes | None = None, rebuild_projection: bool = False) -> None:
     base = CONFERENCES_DIR / conference_id
     profile = json.loads((base / "conference.json").read_text(encoding="utf-8"))
     dataset = json.loads((base / "data" / "papers.json").read_text(encoding="utf-8"))
@@ -146,6 +190,7 @@ def build_conference(conference_id: str) -> None:
         (WEB_DIR / "app" / "styles.css", destination / "assets" / "css" / "styles.css"),
         (WEB_DIR / "shared" / "rating.js", destination / "assets" / "js" / "rating.js"),
         (WEB_DIR / "shared" / "selector.js", destination / "assets" / "js" / "selector.js"),
+        (WEB_DIR / "shared" / "preference-model.js", destination / "assets" / "js" / "preference-model.js"),
         (WEB_DIR / "shared" / "csv.js", destination / "assets" / "js" / "csv.js"),
         (WEB_DIR / "viz" / "index.html", destination / "viz" / "index.html"),
         (WEB_DIR / "viz" / "app.js", destination / "viz" / "app.js"),
@@ -154,10 +199,22 @@ def build_conference(conference_id: str) -> None:
         (base / "data" / "papers.json", destination / "data" / "papers.json"),
     ]:
         _copy(source, target)
-    projection = build_projection(profile, dataset, base / "data" / "embeddings.npz")
     projection_path = destination / "data" / "projection.json"
-    projection_path.write_text(json.dumps(projection, ensure_ascii=False), encoding="utf-8")
-    print(f"built {conference_id}: {len(dataset['papers'])} papers, {projection['n_points']} projected")
+    if cached_projection is not None and not rebuild_projection:
+        projection_path.parent.mkdir(parents=True, exist_ok=True)
+        projection_path.write_bytes(cached_projection)
+        projection = json.loads(cached_projection)
+    else:
+        projection = build_projection(profile, dataset, base / "data" / "embeddings.npz")
+        projection_path.write_text(json.dumps(projection, ensure_ascii=False), encoding="utf-8")
+    preference = build_preference_features(profile, dataset, base / "data" / "embeddings.npz")
+    (destination / "data" / "preference-features.json").write_text(
+        json.dumps(preference, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
+    )
+    print(
+        f"built {conference_id}: {len(dataset['papers'])} papers, {projection['n_points']} projected, "
+        f"{preference['dimensions']} preference dimensions"
+    )
 
 
 def build_landing(ids: list[str]) -> None:
@@ -178,8 +235,18 @@ def build_landing(ids: list[str]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build the static multi-conference site")
     parser.add_argument("--conference", action="append", choices=conference_ids())
+    parser.add_argument(
+        "--rebuild-projections",
+        action="store_true",
+        help="Explicitly recompute PCA, t-SNE, and UMAP instead of preserving checked-in projections",
+    )
     args = parser.parse_args()
     ids = args.conference or conference_ids()
+    cached_projections = {
+        conference_id: (DOCS_DIR / conference_id / "data" / "projection.json").read_bytes()
+        for conference_id in ids
+        if (DOCS_DIR / conference_id / "data" / "projection.json").exists()
+    }
     if args.conference:
         for conference_id in ids:
             destination = DOCS_DIR / conference_id
@@ -188,7 +255,11 @@ def main() -> None:
     elif DOCS_DIR.exists():
         shutil.rmtree(DOCS_DIR)
     for conference_id in ids:
-        build_conference(conference_id)
+        build_conference(
+            conference_id,
+            cached_projection=cached_projections.get(conference_id),
+            rebuild_projection=args.rebuild_projections,
+        )
     build_landing(conference_ids())
 
 
