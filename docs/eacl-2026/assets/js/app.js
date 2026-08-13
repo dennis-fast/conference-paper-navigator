@@ -843,7 +843,12 @@ function wireEvents() {
     }
   });
   window.addEventListener("message", (event) => {
-    if (event.origin !== window.location.origin || event.data?.type !== "favorite_update") return;
+    if (event.origin !== window.location.origin) return;
+    if (event.data?.type === "viz_ready") {
+      notifyVisualization();
+      return;
+    }
+    if (event.data?.type !== "favorite_update") return;
     if (event.data?.payload?.paperId) toggleFavorite(String(event.data.payload.paperId), Boolean(event.data.payload.selected));
   });
   el("scheduleByPresentationOrder").addEventListener("change", () => { state.scheduleByPresentationOrder = el("scheduleByPresentationOrder").checked; persistState(); renderOralSchedule(); });
