@@ -1,9 +1,9 @@
-import { toCSV } from "./csv.js";
-import { DEFAULT_MU, DEFAULT_SIGMA, MIN_SIGMA, SIGMA_DECAY, updatePair } from "./rating.js";
-import { chooseNextPair } from "./selector.js";
-import { blendPreferencePrediction, preferenceProgress, trainPreferenceModel } from "./preference-model.js";
-import { initializeCloudSync } from "./cloud-sync.js";
-import { mergeComparisonData, mergeFavorites } from "./merge-comparisons.js";
+import { toCSV } from "./csv.js?v=20260814-stable-updates-v3";
+import { DEFAULT_MU, DEFAULT_SIGMA, MIN_SIGMA, SIGMA_DECAY, updatePair } from "./rating.js?v=20260814-stable-updates-v3";
+import { chooseNextPair } from "./selector.js?v=20260814-stable-updates-v3";
+import { blendPreferencePrediction, preferenceProgress, trainPreferenceModel } from "./preference-model.js?v=20260814-stable-updates-v3";
+import { initializeCloudSync } from "./cloud-sync.js?v=20260814-stable-updates-v3";
+import { mergeComparisonData, mergeTimestampedRecords } from "./merge-comparisons.js?v=20260814-stable-updates-v3";
 
 const BASE_K = 32;
 const JOINT_FEEDBACK_SCALE = 0.45;
@@ -21,6 +21,7 @@ let activeUserId = null;
 let cloudSync = null;
 let preferenceBundle = null;
 let preferenceModel = null;
+let lastVisualizationFingerprint = "";
 
 const el = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? "")
@@ -51,6 +52,8 @@ function defaultState() {
     priors: {},
     ratings: {},
     favorites: {},
+    topicInterests: {},
+    paperPlans: {},
     history: [],
     history_tombstones: [],
     reset_at: "",
@@ -64,6 +67,7 @@ function defaultState() {
     muPriority: "highest",
     winsOnly: false,
     scheduleByPresentationOrder: false,
+    continueAfterReady: false,
   };
 }
 
@@ -80,6 +84,36 @@ function stableHistoryId(entry, index) {
     hash = Math.imul(hash, 16777619);
   }
   return `legacy-${(hash >>> 0).toString(16)}`;
+}
+
+function normalizeTimestampedSelections(value, label) {
+  if (value != null && !isRecord(value)) throw new Error(`The ${label} list is invalid.`);
+  const records = {};
+  for (const [key, raw] of Object.entries(value || {})) {
+    if (typeof raw === "boolean") {
+      records[String(key)] = { selected: raw, modified_at: "" };
+      continue;
+    }
+    if (!isRecord(raw)) throw new Error(`The ${label} entry for ${key} is invalid.`);
+    records[String(key)] = { selected: Boolean(raw.selected), modified_at: typeof raw.modified_at === "string" ? raw.modified_at : "" };
+  }
+  return records;
+}
+
+function normalizePaperPlans(value) {
+  if (value != null && !isRecord(value)) throw new Error("The personal paper plans are invalid.");
+  const plans = {};
+  const statuses = new Set(["", "planned", "attended", "skipped"]);
+  for (const [paperId, raw] of Object.entries(value || {})) {
+    if (!isRecord(raw)) continue;
+    plans[String(paperId)] = {
+      status: statuses.has(raw.status) ? raw.status : "",
+      tags: Array.isArray(raw.tags) ? [...new Set(raw.tags.map(String).map((tag) => tag.trim()).filter(Boolean))].slice(0, 20) : [],
+      notes: typeof raw.notes === "string" ? raw.notes.slice(0, 10000) : "",
+      modified_at: typeof raw.modified_at === "string" ? raw.modified_at : "",
+    };
+  }
+  return plans;
 }
 
 function normalizeState(value) {
@@ -122,19 +156,9 @@ function normalizeState(value) {
     ratings[String(paperId)] = rating;
   }
 
-  if (value.favorites != null && !isRecord(value.favorites)) throw new Error("The favorites list is invalid.");
-  const favorites = {};
-  for (const [paperId, rawFavorite] of Object.entries(value.favorites || {})) {
-    if (typeof rawFavorite === "boolean") {
-      favorites[String(paperId)] = { selected: rawFavorite, modified_at: "" };
-      continue;
-    }
-    if (!isRecord(rawFavorite)) throw new Error(`The favorite entry for paper ${paperId} is invalid.`);
-    favorites[String(paperId)] = {
-      selected: Boolean(rawFavorite.selected),
-      modified_at: typeof rawFavorite.modified_at === "string" ? rawFavorite.modified_at : "",
-    };
-  }
+  const favorites = normalizeTimestampedSelections(value.favorites, "favorites");
+  const topicInterests = normalizeTimestampedSelections(value.topicInterests, "topic interests");
+  const paperPlans = normalizePaperPlans(value.paperPlans);
 
   if (value.history != null && !Array.isArray(value.history)) throw new Error("The comparison history is invalid.");
   const choices = new Set(["A", "STRONG_A", "B", "STRONG_B", "BOTH", "NEITHER", "SKIP"]);
@@ -166,6 +190,8 @@ function normalizeState(value) {
     priors,
     ratings,
     favorites,
+    topicInterests,
+    paperPlans,
     history,
     history_tombstones: Array.isArray(value.history_tombstones) ? [...new Set(value.history_tombstones.map(String))].sort() : [],
     reset_at: typeof value.reset_at === "string" ? value.reset_at : "",
@@ -182,6 +208,7 @@ function normalizeState(value) {
     muPriority: priorities.has(value.muPriority) ? value.muPriority : defaults.muPriority,
     winsOnly: Boolean(value.winsOnly),
     scheduleByPresentationOrder: Boolean(value.scheduleByPresentationOrder),
+    continueAfterReady: Boolean(value.continueAfterReady),
   };
 }
 
@@ -196,6 +223,7 @@ function createStateBackup() {
       rated_papers: Object.values(state.ratings).filter((rating) => Number(rating.n) > 0).length,
       prior_papers: Object.keys(state.priors).length,
       favorites: selectedFavoriteIds().length,
+      planned_papers: Object.values(state.paperPlans || {}).filter((plan) => plan.status || plan.notes || plan.tags?.length).length,
     },
     state,
   };
@@ -226,10 +254,18 @@ function loadState() {
   return loadStateFromKey(stateKey());
 }
 
-function notifyVisualization() {
+function notifyVisualization({ force = false } = {}) {
   const frame = el("vizFrame");
+  const payload = {
+    key: stateKey(), ratings: effectiveDisplayRatings(), favorites: state.favorites,
+    clusters: preferenceModel ? Object.fromEntries(preferenceModel.clusterById) : {},
+    clusterLabels: semanticClusterLabels(),
+  };
+  const fingerprint = JSON.stringify(payload);
+  if (!force && fingerprint === lastVisualizationFingerprint) return;
+  lastVisualizationFingerprint = fingerprint;
   frame?.contentWindow?.postMessage(
-    { type: "ranking_state_update", payload: { key: stateKey(), ratings: effectiveDisplayRatings(), favorites: state.favorites } },
+    { type: "ranking_state_update", payload },
     window.location.origin,
   );
 }
@@ -237,7 +273,6 @@ function notifyVisualization() {
 function persistState({ touch = true, sync = true } = {}) {
   if (touch) state.modified_at = new Date().toISOString();
   localStorage.setItem(stateKey(), JSON.stringify(state));
-  notifyVisualization();
   if (sync) cloudSync?.scheduleSave(state);
 }
 
@@ -268,6 +303,17 @@ function selectedFavoriteIds(target = state) {
   return Object.entries(target?.favorites || {}).filter(([, favorite]) => favorite?.selected).map(([paperId]) => paperId);
 }
 
+function selectedTopicInterests(target = state) {
+  return Object.entries(target?.topicInterests || {}).filter(([, interest]) => interest?.selected).map(([topic]) => topic);
+}
+
+function preferenceSeedPaperIds() {
+  const selected = new Set(selectedTopicInterests());
+  if (!selected.size) return [];
+  const candidates = papers.filter((paper) => [paper.primary_category, paper.secondary_category, ...(paper.keywords || [])].some((topic) => selected.has(topic)));
+  return candidates.slice().sort((a, b) => String(a.id).localeCompare(String(b.id))).filter((_, index) => index % Math.max(1, Math.ceil(candidates.length / 40)) === 0).slice(0, 40).map((paper) => String(paper.id));
+}
+
 function isFavorite(paperId, target = state) {
   return Boolean(target?.favorites?.[String(paperId)]?.selected);
 }
@@ -278,11 +324,53 @@ function favoriteButton(paperId, extraClass = "") {
   return `<button class="favorite-btn ${extraClass}" type="button" data-favorite-id="${esc(paperId)}" aria-label="${label}" aria-pressed="${selected}">${selected ? "★" : "☆"}</button>`;
 }
 
+function paperPlan(paperId) {
+  return state.paperPlans?.[String(paperId)] || { status: "", tags: [], notes: "", modified_at: "" };
+}
+
+function planButton(paperId, extraClass = "") {
+  const plan = paperPlan(paperId);
+  const hasPlan = Boolean(plan.status || plan.notes || plan.tags?.length);
+  return `<button class="plan-btn ${hasPlan ? "has-plan" : ""} ${extraClass}" type="button" data-plan-id="${esc(paperId)}">${plan.status === "attended" ? "✓ Attended" : hasPlan ? "Plan ✓" : "Plan"}</button>`;
+}
+
 function toggleFavorite(paperId, selected = !isFavorite(paperId)) {
   state.favorites[String(paperId)] = { selected, modified_at: new Date().toISOString() };
   persistState();
   rebuildFiltered();
   showMessage(selected ? "Added paper to favorites and updated preference predictions." : "Removed paper from favorites.");
+}
+
+function toggleTopicInterest(topic) {
+  const selected = !state.topicInterests?.[topic]?.selected;
+  state.topicInterests[String(topic)] = { selected, modified_at: new Date().toISOString() };
+  persistState(); rebuildFiltered();
+  showMessage(selected ? `Added ${topic} as an interest.` : `Removed ${topic} from your interests.`);
+}
+
+function openPaperPlanner(paperId) {
+  const paper = papers.find((item) => String(item.id) === String(paperId));
+  if (!paper) return;
+  const plan = paperPlan(paperId);
+  el("plannerPaperId").value = String(paperId);
+  el("plannerPaperTitle").textContent = paper.title;
+  el("plannerStatus").value = plan.status || "";
+  el("plannerTags").value = (plan.tags || []).join(", ");
+  el("plannerNotes").value = plan.notes || "";
+  el("paperPlanner").showModal();
+}
+
+function savePaperPlanner() {
+  const paperId = el("plannerPaperId").value;
+  if (!paperId) return;
+  state.paperPlans[paperId] = {
+    status: el("plannerStatus").value,
+    tags: [...new Set(el("plannerTags").value.split(",").map((tag) => tag.trim()).filter(Boolean))].slice(0, 20),
+    notes: el("plannerNotes").value.trim().slice(0, 10000),
+    modified_at: new Date().toISOString(),
+  };
+  persistState(); rebuildFiltered();
+  showMessage("Saved your personal paper plan.");
 }
 
 function effectiveDisplayRatings() {
@@ -313,6 +401,7 @@ function hydrate(paper) {
   const oral = firstPresentation(paper, "oral");
   const poster = firstPresentation(paper, "poster");
   const primary = primaryPresentation(paper);
+  const plan = paperPlan(paperId);
   return {
     ...paper,
     id: paperId,
@@ -335,7 +424,55 @@ function hydrate(paper) {
     modelConfidence: Number(rating.modelConfidence || 0),
     cluster: preferenceModel?.clusterById?.get(paperId),
     representative: Boolean(preferenceModel?.representatives?.has(paperId)),
+    plan,
   };
+}
+
+function semanticClusterLabels() {
+  if (!preferenceModel?.clusterById || !papers.length) return {};
+  const counts = new Map();
+  for (const paper of papers) {
+    const cluster = preferenceModel.clusterById.get(String(paper.id));
+    if (cluster == null) continue;
+    if (!counts.has(cluster)) counts.set(cluster, new Map());
+    const terms = [paper.primary_category, paper.secondary_category].filter(Boolean);
+    for (const term of terms) counts.get(cluster).set(term, (counts.get(cluster).get(term) || 0) + 1);
+  }
+  return Object.fromEntries([...counts.entries()].map(([cluster, terms]) => {
+    const label = [...terms.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] || `Semantic area ${Number(cluster) + 1}`;
+    return [String(cluster), label];
+  }));
+}
+
+function dotProduct(a, b) {
+  let total = 0;
+  for (let index = 0; index < Math.min(a?.length || 0, b?.length || 0); index += 1) total += a[index] * b[index];
+  return total;
+}
+
+function recommendationReason(paper) {
+  if (paper.favorite) return "You marked this paper as a favorite.";
+  if (paper.plan?.status === "planned") return "You explicitly added this paper to your plan.";
+  if (paper.plan?.status === "attended") return "Marked as attended/visited.";
+  if (paper.n > 0) return `Directly informed by ${paper.n} comparison${paper.n === 1 ? "" : "s"}.`;
+  const selectedTopics = selectedTopicInterests();
+  const matchingTopics = [paper.cat1, paper.cat2, ...(paper.keywords || [])].filter((topic) => selectedTopics.includes(topic));
+  if (matchingTopics.length) return `Matches your interest in ${matchingTopics.slice(0, 2).join(" and ")}.`;
+  const feature = preferenceModel?.featureById?.get(paper.id);
+  let nearest = null;
+  if (feature) {
+    for (const favoriteId of selectedFavoriteIds()) {
+      const favoriteFeature = preferenceModel.featureById.get(favoriteId);
+      const similarity = favoriteFeature ? dotProduct(feature, favoriteFeature) : -Infinity;
+      if (!nearest || similarity > nearest.similarity) nearest = { id: favoriteId, similarity };
+    }
+  }
+  if (nearest && nearest.similarity > 0.35) {
+    const title = papers.find((item) => String(item.id) === nearest.id)?.title || nearest.id;
+    return `Semantically similar to your favorite “${title}”.`;
+  }
+  if (paper.predicted) return `Preference model estimate · ${Math.round(paper.modelConfidence * 100)}% model confidence.`;
+  return "Not enough personal evidence yet—compare or star related papers.";
 }
 
 function parseStartMinutes(value) {
@@ -361,7 +498,7 @@ function presentationLabel(item) {
 }
 
 function rebuildFiltered() {
-  preferenceModel = trainPreferenceModel(preferenceBundle, state);
+  preferenceModel = trainPreferenceModel(preferenceBundle, { ...state, seedPaperIds: preferenceSeedPaperIds() });
   const query = el("search").value.trim().toLowerCase();
   const track = el("trackFilter").value;
   const category = el("categoryFilter").value;
@@ -394,6 +531,7 @@ function renderStats() {
     ["Rated", Object.values(state.ratings).filter((rating) => Number(rating.n) > 0).length],
     ["Model-scored", preferenceModel?.hasSignal ? preferenceModel.predictions.size : Object.keys(state.priors).length],
     ["Favorites", selectedFavoriteIds().length],
+    ["Planned", Object.values(state.paperPlans || {}).filter((plan) => ["planned", "attended"].includes(plan.status)).length],
   ].map(([label, value]) => `<span class="pill">${label}: <b>${value}</b></span>`).join("");
 }
 
@@ -429,22 +567,33 @@ function renderOverview() {
 function paperHtml(paper) {
   const badges = (paper.presentations || []).map((item) => `<span class="chip">${esc(presentationLabel(item))}</span>`).join("");
   return `<article class="paper">
-    <div class="paper-heading"><div class="top">${esc(paper.title)}</div>${favoriteButton(paper.id)}</div>
+    <div class="paper-heading"><div class="top">${esc(paper.title)}</div><div class="paper-actions">${planButton(paper.id)}${favoriteButton(paper.id)}</div></div>
     <div class="meta"><span>${esc(paper.id)}</span><span>${esc(paper.authorsText || "Authors unavailable")}</span><span>${esc(paper.track || paper.cat1 || "Uncategorized")}</span><span>μ ${paper.mu.toFixed(1)}</span></div>
     <div class="schedule-badges">${badges || '<span class="chip">Schedule unavailable</span>'}</div>
+    <div class="recommendation-reason">${esc(recommendationReason(paper))}</div>
     <details class="abs"><summary>Abstract</summary><div>${esc(paper.abstract || "Abstract unavailable")}</div></details>
   </article>`;
 }
 
 function renderCard(paper, label) {
   if (!paper) return "";
-  return `<div class="head"><div class="paper-heading"><strong>${label}: ${esc(paper.title)}</strong>${favoriteButton(paper.id)}</div><div class="k">${esc(paper.id)} · ${esc(paper.track || paper.cat1 || "Uncategorized")} · μ ${paper.mu.toFixed(1)} · σ ${paper.sigma.toFixed(1)} · n ${paper.n}${paper.predicted ? " · model-informed" : ""}</div></div>
-    <div class="body"><div class="small">${esc(paper.authorsText)}</div><p>${esc(paper.abstract || "Abstract unavailable")}</p><div class="schedule-badges">${(paper.presentations || []).map((item) => `<span class="chip">${esc(presentationLabel(item))}</span>`).join("")}</div></div>`;
+  return `<div class="head"><div class="paper-heading"><strong>${label}: ${esc(paper.title)}</strong><div class="paper-actions">${planButton(paper.id)}${favoriteButton(paper.id)}</div></div><div class="k">${esc(paper.id)} · ${esc(paper.track || paper.cat1 || "Uncategorized")} · μ ${paper.mu.toFixed(1)} · σ ${paper.sigma.toFixed(1)} · n ${paper.n}${paper.predicted ? " · model-informed" : ""}</div></div>
+    <div class="body"><div class="small">${esc(paper.authorsText)}</div><p>${esc(paper.abstract || "Abstract unavailable")}</p><div class="recommendation-reason">Why shown: ${esc(recommendationReason(paper))}</div><div class="schedule-badges">${(paper.presentations || []).map((item) => `<span class="chip">${esc(presentationLabel(item))}</span>`).join("")}</div></div>`;
 }
 
 function nextPair() {
-  const pairPool = state.smartTarget ? papers.map(hydrate) : filtered;
-  const selection = chooseNextPair(pairPool, state);
+  const pairPool = (state.smartTarget ? papers.map(hydrate) : filtered).filter((paper) => paper.plan?.status !== "skipped");
+  const decisions = decisionProgress();
+  const selectorState = { ...state, resolvedDecisionKeys: decisions.resolvedKeys };
+  const enoughEvidence = state.history.filter((entry) => entry.outcome != null).length >= 20 || selectedFavoriteIds().length >= 8;
+  const allDecisionsReady = enoughEvidence && decisions.total > 0 && decisions.resolvedKeys.length === decisions.total;
+  const ready = el("decisionReady");
+  ready.hidden = !allDecisionsReady || state.continueAfterReady || Boolean(state.smartTarget);
+  if (!ready.hidden) {
+    ready.innerHTML = `<div class="panel-row"><div><div class="h2">Your schedule decisions are stable</div><div class="small">Additional comparisons are unlikely to change the recommended rooms or poster cutoff. You can use My Agenda now.</div></div><div class="agenda-actions"><button class="btn" type="button" data-open-agenda>Open My Agenda</button><button class="btn secondary" type="button" data-continue-ranking>Continue exploring</button></div></div>`;
+    currentPair = null; el("arena").hidden = true; return;
+  }
+  const selection = chooseNextPair(pairPool, selectorState);
   const arena = el("arena");
   if (!selection?.pair) {
     currentPair = null;
@@ -453,7 +602,6 @@ function nextPair() {
   }
   const pair = selection.pair;
   currentPair = { A: pair[0], B: pair[1] };
-  state.lastPair = [{ id: pair[0].id }, { id: pair[1].id }];
   arena.hidden = false;
   el("pairReason").textContent = selection.reason || "";
   el("pairStage").textContent = selection.stage || "Smart";
@@ -508,7 +656,13 @@ function mergeStates(first, second) {
   const remoteResetIsNewer = (remote.reset_at || "") > (local.reset_at || "");
   const favorites = localResetIsNewer
     ? local.favorites
-    : remoteResetIsNewer ? remote.favorites : mergeFavorites(local.favorites, remote.favorites);
+    : remoteResetIsNewer ? remote.favorites : mergeTimestampedRecords(local.favorites, remote.favorites);
+  const topicInterests = localResetIsNewer
+    ? local.topicInterests
+    : remoteResetIsNewer ? remote.topicInterests : mergeTimestampedRecords(local.topicInterests, remote.topicInterests);
+  const paperPlans = localResetIsNewer
+    ? local.paperPlans
+    : remoteResetIsNewer ? remote.paperPlans : mergeTimestampedRecords(local.paperPlans, remote.paperPlans);
   const priors = localResetIsNewer
     ? local.priors
     : remoteResetIsNewer ? remote.priors : {
@@ -519,6 +673,8 @@ function mergeStates(first, second) {
     ...(merged.localIsNewer ? local : remote),
     priors,
     favorites,
+    topicInterests,
+    paperPlans,
     history: merged.history,
     history_tombstones: merged.history_tombstones,
     reset_at: merged.reset_at,
@@ -540,6 +696,7 @@ function vote(choice) {
   const entry = { id: createHistoryId(), a: currentPair.A.id, b: currentPair.B.id, outcome, choice, kMult, ts: new Date().toISOString() };
   applyHistoryEntry(entry);
   state.history.push(entry);
+  state.lastPair = [{ id: currentPair.A.id }, { id: currentPair.B.id }];
   persistState();
   rebuildFiltered();
 }
@@ -559,8 +716,8 @@ function undo() {
 
 function renderLeaderboard() {
   el("leaderboard").innerHTML = filtered.slice().sort(comparePapers).slice(0, 40).map((paper, index) => `
-    <div class="lb-row"><div class="lb-top"><div class="lb-title">#${index + 1} — ${esc(paper.title)}</div><div class="row-actions">${favoriteButton(paper.id)}<div class="small">μ ${paper.mu.toFixed(1)} · σ ${paper.sigma.toFixed(1)} · n ${paper.n}</div></div></div>
-    <div class="lb-sub">${esc(paper.id)} · ${esc(paper.track || paper.cat1 || "Uncategorized")} · ${esc(presentationLabel(paper.oral || paper.poster))}</div></div>`).join("");
+    <div class="lb-row"><div class="lb-top"><div class="lb-title">#${index + 1} — ${esc(paper.title)}</div><div class="row-actions">${planButton(paper.id)}${favoriteButton(paper.id)}<div class="small">μ ${paper.mu.toFixed(1)} · σ ${paper.sigma.toFixed(1)} · n ${paper.n}</div></div></div>
+    <div class="lb-sub">${esc(paper.id)} · ${esc(paper.track || paper.cat1 || "Uncategorized")} · ${esc(presentationLabel(paper.oral || paper.poster))}</div><div class="recommendation-reason">${esc(recommendationReason(paper))}</div></div>`).join("");
 }
 
 function scheduleKey(presentation) {
@@ -568,7 +725,7 @@ function scheduleKey(presentation) {
 }
 
 function decisionProgress() {
-  const hydrated = papers.map(hydrate);
+  const hydrated = papers.map(hydrate).filter((paper) => paper.plan?.status !== "skipped");
   const oralSlots = new Map();
   const posterBlocks = new Map();
   for (const paper of hydrated) {
@@ -585,8 +742,8 @@ function decisionProgress() {
       }
     }
   }
-  let oralTotal = 0; let oralResolved = 0;
-  for (const rooms of oralSlots.values()) {
+  let oralTotal = 0; let oralResolved = 0; const resolvedKeys = [];
+  for (const [key, rooms] of oralSlots.entries()) {
     if (rooms.size < 2) continue;
     oralTotal += 1;
     const blocks = [...rooms.values()].map((roomPapers) => {
@@ -599,17 +756,17 @@ function decisionProgress() {
         uncertainty: ranked.slice(0, 3).reduce((sum, paper) => sum + paper.sigma, 0) / Math.min(3, ranked.length),
       };
     }).sort((a, b) => b.utility - a.utility);
-    if (blocks[0].utility - blocks[1].utility > ((blocks[0].uncertainty + blocks[1].uncertainty) / 2) * 0.25) oralResolved += 1;
+    if (blocks[0].utility - blocks[1].utility > ((blocks[0].uncertainty + blocks[1].uncertainty) / 2) * 0.25) { oralResolved += 1; resolvedKeys.push(`oral:${key}`); }
   }
   let posterTotal = 0; let posterResolved = 0;
-  for (const blockMap of posterBlocks.values()) {
+  for (const [key, blockMap] of posterBlocks.entries()) {
     const ranked = [...blockMap.values()].sort(comparePapers);
     if (ranked.length <= state.posterTarget) continue;
     posterTotal += 1;
     const upper = ranked[state.posterTarget - 1]; const lower = ranked[state.posterTarget];
-    if (upper.mu - lower.mu > ((upper.sigma + lower.sigma) / 2) * 0.15) posterResolved += 1;
+    if (upper.mu - lower.mu > ((upper.sigma + lower.sigma) / 2) * 0.15) { posterResolved += 1; resolvedKeys.push(`poster:${key}`); }
   }
-  return { oralTotal, oralResolved, posterTotal, posterResolved };
+  return { oralTotal, oralResolved, posterTotal, posterResolved, resolvedKeys, total: oralTotal + posterTotal };
 }
 
 function renderSmartProgress() {
@@ -646,7 +803,7 @@ function normalized(values, value) {
 
 function renderOralSchedule() {
   const root = el("schedule");
-  const records = filtered.flatMap((paper) => presentationsOf(paper, "oral").map((presentation) => ({ paper, presentation })));
+  const records = filtered.filter((paper) => paper.plan?.status !== "skipped").flatMap((paper) => presentationsOf(paper, "oral").map((presentation) => ({ paper, presentation })));
   if (!records.length) { root.innerHTML = '<div class="small">No oral presentations match the current filters.</div>'; return; }
   if (el("scheduleByPresentationOrder").checked && config.features.presentation_order) {
     renderOrderSchedule(records); return;
@@ -677,7 +834,7 @@ function renderOralSchedule() {
       const gap = blocks.length > 1 ? blocks[0].utility - blocks[1].utility : Infinity;
       const uncertainty = blocks.length > 1 ? (blocks[0].uncertainty + blocks[1].uncertainty) / 2 : 1;
       const confidence = gap === Infinity ? "high" : gap > uncertainty * 0.25 ? "high" : gap > uncertainty * 0.1 ? "medium" : "unresolved";
-      const rows = blocks.map((block, index) => `<tr><td>${index === 0 ? "Primary" : index === 1 ? "Backup" : index + 1}</td><td>${esc(block.room)}</td><td>${block.utility.toFixed(1)}</td><td>${block.papers.filter((paper) => paper.favorite).length || "—"}</td><td>${block.papers.slice(0, 4).map((paper) => `${favoriteButton(paper.id, "inline-star")} ${esc(paper.title)}`).join("<br>")}</td></tr>`).join("");
+      const rows = blocks.map((block, index) => `<tr><td>${index === 0 ? "Primary" : index === 1 ? "Backup" : index + 1}</td><td>${esc(block.room)}</td><td>${block.utility.toFixed(1)}</td><td>${block.papers.filter((paper) => paper.favorite).length || "—"}</td><td>${block.papers.slice(0, 4).map((paper) => `${favoriteButton(paper.id, "inline-star")} ${planButton(paper.id)} ${esc(paper.title)}<div class="recommendation-reason">${esc(recommendationReason(paper))}</div>`).join("")}</td></tr>`).join("");
       const key = `${slot.date}|||${slot.time}`;
       return `<details class="schedule-slot" open><summary class="schedule-slot-title"><span>${esc(slot.time)} · <span class="confidence ${confidence}">${confidence}</span></span><button class="btn secondary compact-action" type="button" data-focus-kind="oral" data-focus-key="${esc(key)}">Resolve this slot</button></summary><table class="schedule-table"><thead><tr><th>Pick</th><th>Room</th><th>Room utility</th><th>Favorites</th><th>Top papers</th></tr></thead><tbody>${rows}</tbody></table></details>`;
     }).join("");
@@ -702,7 +859,7 @@ function renderOrderSchedule(records) {
 
 function renderPosters() {
   const root = el("posters");
-  const records = filtered.flatMap((paper) => [
+  const records = filtered.filter((paper) => paper.plan?.status !== "skipped").flatMap((paper) => [
     ...presentationsOf(paper, "poster"),
     ...presentationsOf(paper, "demo"),
   ].map((presentation) => ({ paper, presentation })));
@@ -725,17 +882,143 @@ function renderPosters() {
         else if (index < Math.min(3, target) && (paper.n >= 2 || paper.modelConfidence >= 0.55)) status = "Must visit";
         else if (index < target) status = "Likely visit";
         else if (index < target + 3 && paper.sigma > 180) status = "Explore";
-        return `<tr><td>${favoriteButton(paper.id)}</td><td><span class="visit-status ${status.toLowerCase().replaceAll(" ", "-")}">${status}</span></td><td>${rank.get(paper.id) || "—"}</td><td>${esc(paper.id)}</td><td>${esc(paper.title)}</td><td>${esc(presentation.location || "—")}</td><td>${paper.mu.toFixed(1)} ± ${paper.sigma.toFixed(0)}</td></tr>`;
+        return `<tr><td>${favoriteButton(paper.id)}</td><td><span class="visit-status ${status.toLowerCase().replaceAll(" ", "-")}">${status}</span></td><td>${rank.get(paper.id) || "—"}</td><td>${esc(paper.id)}</td><td>${esc(paper.title)}<div class="recommendation-reason">${esc(recommendationReason(paper))}</div></td><td>${esc(presentation.location || "—")}</td><td>${paper.mu.toFixed(1)} ± ${paper.sigma.toFixed(0)}</td><td>${planButton(paper.id)}</td></tr>`;
       }).join("");
       const key = `${day}|||${time}`;
-      return `<details class="poster-slot" open><summary class="poster-slot-head"><span>${esc(time)} <span class="small">(${items.length} papers · target ${target})</span></span><button class="btn secondary compact-action" type="button" data-focus-kind="poster" data-focus-key="${esc(key)}">Refine this block</button></summary><table class="poster-table"><thead><tr><th>Favorite</th><th>Plan</th><th>Rank</th><th>ID</th><th>Title</th><th>Location</th><th>Score</th></tr></thead><tbody>${rows}</tbody></table></details>`;
+      return `<details class="poster-slot" open><summary class="poster-slot-head"><span>${esc(time)} <span class="small">(${items.length} papers · target ${target})</span></span><button class="btn secondary compact-action" type="button" data-focus-kind="poster" data-focus-key="${esc(key)}">Refine this block</button></summary><table class="poster-table"><thead><tr><th>Favorite</th><th>Priority</th><th>Rank</th><th>ID</th><th>Title</th><th>Location</th><th>Score</th><th>Personal</th></tr></thead><tbody>${rows}</tbody></table></details>`;
     }).join("");
     return `<details class="poster-day" open><summary class="poster-day-head">${esc(day)}</summary>${blocks}</details>`;
   }).join("");
 }
 
+function topicOptions() {
+  const counts = new Map();
+  for (const paper of papers) {
+    for (const topic of [paper.primary_category, paper.secondary_category].filter(Boolean)) counts.set(topic, (counts.get(topic) || 0) + 1);
+  }
+  const selected = new Set(selectedTopicInterests());
+  return [...counts.entries()].sort((a, b) => (selected.has(b[0]) - selected.has(a[0])) || b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 18);
+}
+
+function renderOnboarding() {
+  const root = el("onboardingPanel");
+  const favorites = selectedFavoriteIds().length;
+  const interests = selectedTopicInterests().length;
+  const comparisons = state.history.filter((entry) => entry.outcome != null).length;
+  const ready = favorites >= 5 || interests >= 3 || comparisons >= 10;
+  root.hidden = ready;
+  if (ready) return;
+  root.innerHTML = `<div class="onboarding-head"><div><div class="h2">Teach the app what you care about</div><div class="small">Choose a few topics or star promising papers. You will get a provisional agenda immediately; comparisons then focus on decisions that remain uncertain.</div></div><span class="stage-badge">2-minute setup</span></div>
+    <div class="onboarding-steps"><div class="onboarding-step"><strong>${interests}/3 topics</strong><span>Select broad interests below.</span></div><div class="onboarding-step"><strong>${favorites}/5 favorites</strong><span>Star papers while exploring.</span></div><div class="onboarding-step"><strong>${comparisons}/10 comparisons</strong><span>Answer only useful tie-breakers.</span></div></div>
+    <div class="topic-seeds">${topicOptions().map(([topic, count]) => `<button class="topic-seed" type="button" data-topic-interest="${esc(topic)}" aria-pressed="${state.topicInterests?.[topic]?.selected ? "true" : "false"}">${esc(topic)} <span>(${count})</span></button>`).join("")}</div>`;
+}
+
+function roomRecommendation(room, roomPapers) {
+  const ranked = roomPapers.slice().sort(comparePapers);
+  const max = ranked[0]?.mu ?? DEFAULT_MU;
+  const second = ranked[1]?.mu ?? max;
+  const mean = ranked.reduce((sum, paper) => sum + paper.mu, 0) / Math.max(1, ranked.length);
+  const utility = 0.5 * max + 0.3 * second + 0.2 * mean;
+  const uncertainty = ranked.slice(0, 3).reduce((sum, paper) => sum + paper.sigma, 0) / Math.max(1, Math.min(3, ranked.length));
+  return { room, papers: ranked, utility, uncertainty };
+}
+
+function confidenceForChoices(primary, backup) {
+  if (!backup) return "high";
+  const gap = primary.utility - backup.utility;
+  const uncertainty = (primary.uncertainty + backup.uncertainty) / 2;
+  return gap > uncertainty * 0.25 ? "high" : gap > uncertainty * 0.1 ? "medium" : "unresolved";
+}
+
+function agendaData() {
+  const hydrated = papers.map(hydrate).filter((paper) => paper.plan?.status !== "skipped");
+  const oralSlots = new Map(); const posterBlocks = new Map();
+  for (const paper of hydrated) {
+    for (const presentation of paper.presentations || []) {
+      const key = scheduleKey(presentation);
+      if (presentation.type === "oral") {
+        if (!oralSlots.has(key)) oralSlots.set(key, { key, date: presentation.date || "Unscheduled", time: presentation.time || "Time unavailable", rooms: new Map() });
+        const room = presentation.location || "Location unavailable";
+        if (!oralSlots.get(key).rooms.has(room)) oralSlots.get(key).rooms.set(room, []);
+        oralSlots.get(key).rooms.get(room).push(paper);
+      } else if (["poster", "demo"].includes(presentation.type)) {
+        if (!posterBlocks.has(key)) posterBlocks.set(key, { key, date: presentation.date || "Unscheduled", time: presentation.time || "Time unavailable", records: [] });
+        posterBlocks.get(key).records.push({ paper, presentation });
+      }
+    }
+  }
+  const events = [];
+  for (const slot of oralSlots.values()) {
+    const choices = [...slot.rooms.entries()].map(([room, roomPapers]) => roomRecommendation(room, roomPapers)).sort((a, b) => b.utility - a.utility);
+    if (!choices.length) continue;
+    events.push({ ...slot, kind: "oral", primary: choices[0], backup: choices[1] || null, confidence: confidenceForChoices(choices[0], choices[1]) });
+  }
+  for (const block of posterBlocks.values()) {
+    const dedup = new Map(block.records.map((record) => [record.paper.id, record]));
+    const records = [...dedup.values()].sort((a, b) => {
+      const forceA = ["planned", "attended"].includes(a.paper.plan?.status) || a.paper.favorite ? 1 : 0;
+      const forceB = ["planned", "attended"].includes(b.paper.plan?.status) || b.paper.favorite ? 1 : 0;
+      return forceB - forceA || comparePapers(a.paper, b.paper);
+    });
+    const target = Math.min(state.posterTarget, records.length);
+    const forcedIds = new Set(records.filter((record) => record.paper.favorite || ["planned", "attended"].includes(record.paper.plan?.status)).map((record) => record.paper.id));
+    const must = records.filter((record, index) => forcedIds.has(record.paper.id) || index < target);
+    const boundary = records.length > target && target > 0 ? [records[target - 1].paper, records[target].paper] : null;
+    const confidence = !boundary ? "high" : boundary[0].mu - boundary[1].mu > ((boundary[0].sigma + boundary[1].sigma) / 2) * 0.15 ? "high" : "unresolved";
+    events.push({ ...block, kind: "poster", must, target, confidence });
+  }
+  const keysWithConflict = new Set(events.filter((event, index) => events.some((other, otherIndex) => otherIndex !== index && other.key === event.key && other.kind !== event.kind)).map((event) => event.key));
+  events.forEach((event) => { event.conflict = keysWithConflict.has(event.key); });
+  return events.sort((a, b) => dateSort(a.date) - dateSort(b.date) || parseStartMinutes(a.time) - parseStartMinutes(b.time) || a.kind.localeCompare(b.kind));
+}
+
+function agendaPaperHtml(paper) {
+  return `<div class="agenda-paper">${favoriteButton(paper.id, "inline-star")}<div><strong>${esc(paper.title)}</strong><div class="recommendation-reason">${esc(recommendationReason(paper))}</div></div></div>`;
+}
+
+function renderAgenda() {
+  const root = el("agenda"); const events = agendaData();
+  if (!events.length) { root.innerHTML = '<section class="panel"><div class="small">No scheduled presentations are available yet.</div></section>'; return; }
+  const byDate = new Map();
+  for (const event of events) { if (!byDate.has(event.date)) byDate.set(event.date, []); byDate.get(event.date).push(event); }
+  root.innerHTML = [...byDate.entries()].map(([date, dayEvents]) => `<details class="agenda-day" open><summary>${esc(date)} · ${dayEvents.length} agenda decisions</summary>${dayEvents.map((event) => {
+    if (event.kind === "oral") {
+      const reasonPaper = event.primary.papers[0];
+      return `<article class="agenda-item"><div><div class="agenda-time">${esc(event.time)}</div><div class="agenda-kind">Oral session</div></div><div><div class="agenda-title">${esc(event.primary.room)} <span class="confidence ${event.confidence}">${event.confidence}</span> ${event.conflict ? '<span class="conflict-badge">overlaps poster block</span>' : ""}</div><div class="agenda-sub">Backup: ${esc(event.backup?.room || "None")} · ${event.primary.papers.length} talks in recommended room</div><div class="recommendation-reason">Why: ${esc(recommendationReason(reasonPaper))}</div><div class="agenda-paper-list">${event.primary.papers.slice(0, 3).map(agendaPaperHtml).join("")}</div></div><div class="agenda-item-actions"><button class="btn secondary compact-action" data-focus-kind="oral" data-focus-key="${esc(event.key)}">${event.confidence === "unresolved" ? "Resolve choice" : "Refine"}</button>${planButton(reasonPaper.id)}</div></article>`;
+    }
+    return `<article class="agenda-item"><div><div class="agenda-time">${esc(event.time)}</div><div class="agenda-kind">Posters</div></div><div><div class="agenda-title">${event.must.length} must-visit posters <span class="confidence ${event.confidence}">${event.confidence}</span> ${event.conflict ? '<span class="conflict-badge">overlaps oral session</span>' : ""}</div><div class="agenda-sub">Target: ${event.target} visits. Favorites and explicitly planned papers stay at the top.</div><div class="agenda-paper-list">${event.must.map(({ paper }) => agendaPaperHtml(paper)).join("")}</div></div><div class="agenda-item-actions"><button class="btn secondary compact-action" data-focus-kind="poster" data-focus-key="${esc(event.key)}">${event.confidence === "unresolved" ? "Resolve cutoff" : "Refine"}</button></div></article>`;
+  }).join("")}</details>`).join("");
+}
+
+function calendarTimestamp(dateText, timeText, end = false) {
+  const year = String(config.guide?.conference_dates || "").match(/20\d{2}/)?.[0] || String(new Date().getFullYear());
+  const date = new Date(`${dateText} ${year} 12:00:00`);
+  if (Number.isNaN(date.getTime())) return null;
+  const times = String(timeText || "").split(/[–—-]/).map((value) => value.trim());
+  const time = times[end ? 1 : 0] || times[0]; const match = time.match(/(\d{1,2}):(\d{2})/);
+  const hour = match ? Number(match[1]) : end ? 10 : 9; const minute = match ? Number(match[2]) : 0;
+  return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}T${String(hour).padStart(2, "0")}${String(minute).padStart(2, "0")}00`;
+}
+
+function icsEscape(value) { return String(value || "").replaceAll("\\", "\\\\").replaceAll("\n", "\\n").replaceAll(",", "\\,").replaceAll(";", "\\;"); }
+
+function exportAgendaCalendar() {
+  const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Conference Paper Navigator//Personal Agenda//EN", "CALSCALE:GREGORIAN"];
+  for (const event of agendaData()) {
+    const start = calendarTimestamp(event.date, event.time, false); const end = calendarTimestamp(event.date, event.time, true);
+    if (!start || !end) continue;
+    const papersForEvent = event.kind === "oral" ? event.primary.papers.slice(0, 4) : event.must.map(({ paper }) => paper);
+    const summary = event.kind === "oral" ? `${config.short_name}: ${event.primary.room}` : `${config.short_name}: must-visit posters`;
+    const location = event.kind === "oral" ? event.primary.room : [...new Set(event.must.map(({ presentation }) => presentation.location).filter(Boolean))].join(", ");
+    lines.push("BEGIN:VEVENT", `UID:${icsEscape(config.id)}-${icsEscape(event.kind)}-${start}@conference-paper-navigator`, `DTSTAMP:${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "")}`, `DTSTART:${start}`, `DTEND:${end}`, `SUMMARY:${icsEscape(summary)}`, `LOCATION:${icsEscape(location)}`, `DESCRIPTION:${icsEscape(papersForEvent.map((paper) => paper.title).join("\n"))}`, "END:VEVENT");
+  }
+  lines.push("END:VCALENDAR");
+  download(`${config.id}-personal-agenda.ics`, `${lines.join("\r\n")}\r\n`, "text/calendar");
+  showMessage("Exported your recommended agenda as an iCalendar file.");
+}
+
 function renderAll() {
-  renderStats(); renderOverview(); renderSmartProgress(); renderLeaderboard(); renderOralSchedule(); renderPosters(); nextPair();
+  renderStats(); renderOnboarding(); renderAgenda(); renderOverview(); renderSmartProgress(); renderLeaderboard(); renderOralSchedule(); renderPosters(); nextPair();
 }
 
 function fillSelect(id, label, values) {
@@ -802,21 +1085,26 @@ async function importStateBackup(file) {
 
 function exportCSV() {
   const ranked = papers.map(hydrate).sort(comparePapers); const rank = new Map(ranked.map((paper, index) => [paper.id, index + 1]));
-  const headers = ["paper_id", "title", "authors", "track", "primary_category", "secondary_category", "presentations", "favorite", "pref_mu", "pref_sigma", "model_confidence", "pref_rank", "n_matches", "wins", "losses", "ties"];
+  const headers = ["paper_id", "title", "authors", "track", "primary_category", "secondary_category", "presentations", "favorite", "personal_status", "personal_tags", "personal_notes", "recommendation_reason", "pref_mu", "pref_sigma", "model_confidence", "pref_rank", "n_matches", "wins", "losses", "ties"];
   const records = papers.map((paper) => {
     const hydrated = hydrate(paper);
-    return { paper_id: paper.id, title: paper.title, authors: (paper.authors || []).join("; "), track: paper.track || "", primary_category: paper.primary_category || "", secondary_category: paper.secondary_category || "", presentations: (paper.presentations || []).map(presentationLabel).join(" | "), favorite: hydrated.favorite, pref_mu: hydrated.mu, pref_sigma: hydrated.sigma, model_confidence: hydrated.modelConfidence, pref_rank: rank.get(String(paper.id)), n_matches: hydrated.n, wins: hydrated.wins, losses: readRating(String(paper.id)).losses, ties: readRating(String(paper.id)).ties };
+    return { paper_id: paper.id, title: paper.title, authors: (paper.authors || []).join("; "), track: paper.track || "", primary_category: paper.primary_category || "", secondary_category: paper.secondary_category || "", presentations: (paper.presentations || []).map(presentationLabel).join(" | "), favorite: hydrated.favorite, personal_status: hydrated.plan.status, personal_tags: hydrated.plan.tags.join("; "), personal_notes: hydrated.plan.notes, recommendation_reason: recommendationReason(hydrated), pref_mu: hydrated.mu, pref_sigma: hydrated.sigma, model_confidence: hydrated.modelConfidence, pref_rank: rank.get(String(paper.id)), n_matches: hydrated.n, wins: hydrated.wins, losses: readRating(String(paper.id)).losses, ties: readRating(String(paper.id)).ties };
   });
   download(`${config.id}-scored.csv`, toCSV(headers, records), "text/csv");
 }
 
-function activateTab(tab) {
+function activateTab(tab, { updateUrl = true } = {}) {
   document.querySelectorAll(".tab").forEach((button) => button.classList.toggle("active", button.dataset.tab === tab));
   document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `tab-${tab}`));
   document.body.classList.toggle("viz-active", tab === "viz");
   if (tab === "viz") {
     notifyVisualization();
     el("vizFrame")?.contentWindow?.postMessage({ type: "viz_resize" }, window.location.origin);
+  }
+  if (updateUrl) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("tab", tab);
+    window.history.replaceState({}, "", url);
   }
 }
 
@@ -833,6 +1121,12 @@ function wireEvents() {
     if (favorite) {
       event.preventDefault(); event.stopPropagation(); toggleFavorite(favorite.dataset.favoriteId); return;
     }
+    const planner = event.target.closest("[data-plan-id]");
+    if (planner) { event.preventDefault(); event.stopPropagation(); openPaperPlanner(planner.dataset.planId); return; }
+    const topic = event.target.closest("[data-topic-interest]");
+    if (topic) { event.preventDefault(); toggleTopicInterest(topic.dataset.topicInterest); return; }
+    if (event.target.closest("[data-open-agenda]")) { event.preventDefault(); activateTab("agenda"); return; }
+    if (event.target.closest("[data-continue-ranking]")) { event.preventDefault(); state.continueAfterReady = true; persistState(); rebuildFiltered(); return; }
     const focus = event.target.closest("[data-focus-kind]");
     if (focus) {
       event.preventDefault(); event.stopPropagation();
@@ -845,7 +1139,7 @@ function wireEvents() {
   window.addEventListener("message", (event) => {
     if (event.origin !== window.location.origin) return;
     if (event.data?.type === "viz_ready") {
-      notifyVisualization();
+      notifyVisualization({ force: true });
       return;
     }
     if (event.data?.type !== "favorite_update") return;
@@ -854,13 +1148,16 @@ function wireEvents() {
   el("scheduleByPresentationOrder").addEventListener("change", () => { state.scheduleByPresentationOrder = el("scheduleByPresentationOrder").checked; persistState(); renderOralSchedule(); });
   document.querySelectorAll("[data-vote]").forEach((button) => button.addEventListener("click", () => vote(button.dataset.vote)));
   el("btnUndo").addEventListener("click", undo);
+  el("plannerSave").addEventListener("click", savePaperPlanner);
+  el("btnExportCalendar").addEventListener("click", exportAgendaCalendar);
+  el("btnPrintAgenda").addEventListener("click", () => { activateTab("agenda"); window.print(); });
   el("btnReset").addEventListener("click", () => {
-    if (!confirm(`Fully reset ${config.short_name}? This clears comparisons, ratings, imported priors, favorites, model predictions, and ranking settings for the current account and browser.`)) return;
+    if (!confirm(`Fully reset ${config.short_name}? This clears comparisons, ratings, imported priors, favorites, topic interests, personal plans and notes, model predictions, and ranking settings for the current account and browser.`)) return;
     const resetAt = new Date().toISOString();
     const tombstones = [...new Set([...state.history_tombstones, ...state.history.map((entry) => entry.id)])];
     state = { ...defaultState(), history_tombstones: tombstones, reset_at: resetAt };
     syncControls(); persistState(); rebuildFiltered();
-    showMessage(`Fully reset ${config.short_name}. Model-scored papers, favorites, priors, and comparisons are now cleared.`);
+    showMessage(`Fully reset ${config.short_name}. Rankings, favorites, interests, agenda plans, and notes are now cleared.`);
   });
   el("btnExportState").addEventListener("click", exportStateBackup);
   el("btnExportCSV").addEventListener("click", exportCSV);
@@ -898,6 +1195,8 @@ function stateHasRankings(value) {
   return Object.keys(value.priors).length > 0
     || value.history.length > 0
     || selectedFavoriteIds(value).length > 0
+    || selectedTopicInterests(value).length > 0
+    || Object.values(value.paperPlans || {}).some((plan) => plan.status || plan.notes || plan.tags?.length)
     || Object.values(value.ratings).some((rating) => Number(rating.n) > 0);
 }
 
@@ -973,6 +1272,8 @@ async function initialize() {
     if (!configResponse.ok || !dataResponse.ok || !preferenceResponse.ok) throw new Error("Could not load conference data or preference features.");
     config = await configResponse.json(); dataset = await dataResponse.json(); preferenceBundle = await preferenceResponse.json(); papers = dataset.papers || [];
     state = loadState(); applyConfiguration(); wireEvents(); syncControls(); populateFilters(); rebuildFiltered();
+    const requestedTab = new URLSearchParams(window.location.search).get("tab");
+    if (requestedTab && document.querySelector(`[data-tab="${CSS.escape(requestedTab)}"]`)) activateTab(requestedTab, { updateUrl: false });
     await startCloudSync();
   } catch (error) { showError(error.message || String(error)); }
 }

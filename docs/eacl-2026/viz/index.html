@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Conference Embedding Dashboard</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=20260814-label-layout-v4" />
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
   </head>
   <body>
@@ -91,6 +91,9 @@
           <label>Session
             <select id="session-select" disabled></select>
           </label>
+          <label><input type="checkbox" id="favorite-neighborhood-toggle" /> Favorites + semantic neighbors only</label>
+          <label><input type="checkbox" id="favorite-labels-toggle" checked /> Label favorites</label>
+          <label><input type="checkbox" id="cluster-labels-toggle" /> Label semantic areas</label>
         </section>
 
         <section class="panel">
@@ -173,6 +176,7 @@
             <button id="legend-show-all-btn" class="secondary inline" type="button">Show all</button>
           </div>
           <p class="panel-hint">Click a group to isolate it. Shift-click to show or hide several groups.</p>
+          <div class="marker-legend"><span><i class="marker-circle"></i> paper</span><span><i class="marker-star">★</i> favorite</span><span><i class="marker-ring"></i> search</span></div>
           <div id="category-legend"></div>
         </section>
 
@@ -212,6 +216,6 @@
       </aside>
     </div>
 
-    <script src="./app.js"></script>
+    <script src="./app.js?v=20260814-label-layout-v4"></script>
   </body>
 </html>

@@ -46,6 +46,16 @@ class StaticSiteContractTests(unittest.TestCase):
         source = (ROOT / "src" / "web" / "app" / "app.js").read_text(encoding="utf-8")
         self.assertIn("const baseRating = readRating(paperId)", source)
         self.assertNotIn("const rating = getRating(String(paper.id))", source)
+        self.assertNotIn("state.resolvedDecisionKeys = decisions.resolvedKeys", source)
+        self.assertIn("const selectorState = { ...state, resolvedDecisionKeys: decisions.resolvedKeys }", source)
+        self.assertIn("state.lastPair = [{ id: currentPair.A.id }, { id: currentPair.B.id }]", source)
+
+    def test_visualization_updates_are_deduplicated(self):
+        app_source = (ROOT / "src" / "web" / "app" / "app.js").read_text(encoding="utf-8")
+        viz_source = (ROOT / "src" / "web" / "viz" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("lastVisualizationFingerprint", app_source)
+        self.assertIn("notifyVisualization({ force: true })", app_source)
+        self.assertIn("favoritesChanged && qs('favorite-neighborhood-toggle')?.checked", viz_source)
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is not installed")
     def test_cloud_merge_preserves_additions_and_deletions(self):
@@ -67,6 +77,11 @@ const favorites = mergeFavorites(
 );
 if (favorites.paper.selected !== false) throw new Error("newer favorite removal was lost");
 if (!favorites.local.selected || !favorites.remote.selected) throw new Error("one-sided favorite was lost");
+const plans = mergeTimestampedRecords(
+  {paper: {status: "planned", modified_at: "2026-01-03T00:00:00Z"}},
+  {paper: {status: "attended", modified_at: "2026-01-04T00:00:00Z"}},
+);
+if (plans.paper.status !== "attended") throw new Error("newer personal plan was lost");
 """
         subprocess.run(["node", "--input-type=module", "--eval", source + assertions], check=True, capture_output=True, text=True)
 
@@ -136,6 +151,9 @@ if (!(model.predictions.get("a").mu > model.predictions.get("c").mu)) throw new 
 if (!(model.predictions.get("b").mu > model.predictions.get("c").mu)) throw new Error("favorite did not generalize semantically");
 const blended = blendPreferencePrediction({{mu:1500,sigma:350,n:0,wins:0,losses:0,ties:0}}, model.predictions.get("a"));
 if (!blended.predicted || blended.mu <= 1500) throw new Error("prediction was not blended");
+const topicModel = trainPreferenceModel(bundle, {{seedPaperIds: ["d"], history: [], favorites: {{}}}});
+if (!topicModel.hasSignal) throw new Error("topic interests did not seed model");
+if (!(topicModel.predictions.get("d").mu > topicModel.predictions.get("c").mu)) throw new Error("topic interest direction was not learned");
 '''
         subprocess.run(["node", "--input-type=module", "--eval", assertions], check=True, capture_output=True, text=True)
 
@@ -167,6 +185,34 @@ if (result.pair[0].id === result.pair[1].id) throw new Error("invalid pair");
         self.assertIn('id="favoritesOnly"', shell_html)
         self.assertIn("favorite_update", viz_source)
 
+    def test_agenda_and_personal_workflow_are_available(self):
+        app_source = (ROOT / "src" / "web" / "app" / "app.js").read_text(encoding="utf-8")
+        shell_html = (ROOT / "src" / "web" / "app" / "index.html").read_text(encoding="utf-8")
+        self.assertIn('data-tab="agenda">My Agenda', shell_html)
+        self.assertIn('id="btnExportCalendar"', shell_html)
+        self.assertIn('id="paperPlanner"', shell_html)
+        self.assertIn("function renderAgenda()", app_source)
+        self.assertIn("function exportAgendaCalendar()", app_source)
+        self.assertIn("topicInterests: {}", app_source)
+        self.assertIn("paperPlans: {}", app_source)
+        self.assertIn("recommendationReason", app_source)
+        self.assertIn("Your schedule decisions are stable", app_source)
+        self.assertIn('paper.plan?.status !== "skipped"', app_source)
+        self.assertIn("forcedIds.has(record.paper.id) || index < target", app_source)
+
+    def test_embedding_supports_focused_exploration(self):
+        viz_html = (ROOT / "src" / "web" / "viz" / "index.html").read_text(encoding="utf-8")
+        viz_source = (ROOT / "src" / "web" / "viz" / "app.js").read_text(encoding="utf-8")
+        for element_id in ("favorite-neighborhood-toggle", "favorite-labels-toggle", "cluster-labels-toggle"):
+            self.assertIn(f'id="{element_id}"', viz_html)
+        self.assertIn("state.staticNeighbors?.[favoriteId]", viz_source)
+        self.assertIn("name: 'Semantic areas'", viz_source)
+        self.assertIn("function favoriteLabelAnnotations(points, axisRanges = null)", viz_source)
+        self.assertIn("annotations: favoriteLabelAnnotations(points)", viz_source)
+        self.assertIn("labelOverlap * 40 + markerOverlap * 65", viz_source)
+        self.assertIn("function refreshFavoriteLabelLayout()", viz_source)
+        self.assertIn("plot.on('plotly_relayout'", viz_source)
+
     def test_embedding_favorites_use_star_markers(self):
         app_source = (ROOT / "src" / "web" / "app" / "app.js").read_text(encoding="utf-8")
         viz_source = (ROOT / "src" / "web" / "viz" / "app.js").read_text(encoding="utf-8")
@@ -182,7 +228,7 @@ if (result.pair[0].id === result.pair[1].id) throw new Error("invalid pair");
         app_source = (ROOT / "src" / "web" / "app" / "app.js").read_text(encoding="utf-8")
         shell_html = (ROOT / "src" / "web" / "app" / "index.html").read_text(encoding="utf-8")
         self.assertIn('id="btnReset">Full reset', shell_html)
-        self.assertIn("This clears comparisons, ratings, imported priors, favorites, model predictions", app_source)
+        self.assertIn("This clears comparisons, ratings, imported priors, favorites, topic interests, personal plans and notes", app_source)
         self.assertIn("state = { ...defaultState(), history_tombstones: tombstones, reset_at: resetAt }", app_source)
         self.assertIn("localResetIsNewer", app_source)
         self.assertIn("remoteResetIsNewer", app_source)
@@ -215,6 +261,8 @@ if (result.pair[0].id === result.pair[1].id) throw new Error("invalid pair");
         self.assertIn('"--rebuild-projections"', source)
         self.assertIn("cached_projection is not None and not rebuild_projection", source)
         self.assertIn("projection_path.write_bytes(cached_projection)", source)
+        self.assertIn('"--rebuild-preference-features"', source)
+        self.assertIn("preference_path.write_bytes(cached_preference)", source)
 
     def test_generated_web_assets_match_sources(self):
         mappings = {

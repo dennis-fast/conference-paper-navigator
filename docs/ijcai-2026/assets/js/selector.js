@@ -247,8 +247,9 @@ function allScheduleKeys(items, kinds) {
 }
 
 function chooseAutomaticDecisionPair(items, state, lastIds) {
-  const oralKeys = allScheduleKeys(items, ["oral"]).filter(([, value]) => value.rooms.size >= 2).map(([key]) => key);
-  const posterKeys = allScheduleKeys(items, ["poster", "demo"]).map(([key]) => key);
+  const resolved = new Set(state.resolvedDecisionKeys || []);
+  const oralKeys = allScheduleKeys(items, ["oral"]).filter(([, value]) => value.rooms.size >= 2).map(([key]) => key).filter((key) => !resolved.has(`oral:${key}`));
+  const posterKeys = allScheduleKeys(items, ["poster", "demo"]).map(([key]) => key).filter((key) => !resolved.has(`poster:${key}`));
   const preferPoster = (state.history?.length || 0) % 3 === 2;
   const attempts = preferPoster ? ["poster", "oral"] : ["oral", "poster"];
   for (const kind of attempts) {

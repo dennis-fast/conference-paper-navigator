@@ -61,6 +61,9 @@ tests/                    # Schema, build, and frontend contracts
 - paper overview with conference-derived filters
 - browser-trained personal preference model seeded by favorites and pairwise feedback
 - staged smart ranking: semantic discovery, schedule decisions, shortlist refinement, and exploration
+- a unified **My Agenda** timeline with primary and backup rooms, must-visit posters, conflicts, and confidence
+- fast onboarding from topic interests and favorites before any pairwise comparisons
+- concise recommendation explanations showing direct, topical, favorite-neighbor, or model evidence
 - session-aware active questions for oral room conflicts and poster must-visit cutoffs
 - uncertainty-aware Elo updates retained as direct per-paper evidence
 - conference- and user-namespaced browser state, import, and export
@@ -69,6 +72,7 @@ tests/                    # Schema, build, and frontend contracts
 - oral room recommendations by simultaneous time block
 - optional talk-order comparison when the source publishes presentation order
 - ranked poster and demo priorities
+- personal paper status, tags, notes, printable agenda, and iCalendar export
 - scored CSV export
 
 Personal ranking state always remains available in the browser. Optional Firebase sync can store a private copy for an authenticated user; it is disabled until a Firebase project is configured.
@@ -81,7 +85,13 @@ New users can star promising papers in the overview, embedding inspector, rankin
 
 The ranking panel reports semantic coverage and decision stability. Oral recommendations combine the strongest two papers with the room mean; poster blocks distinguish must-visit favorites, likely visits, uncertain exploration candidates, and optional papers. Use **Resolve this slot** or **Refine this block** to focus subsequent comparisons on one decision.
 
-**Full reset** clears every preference signal for the current conference and account: comparisons, direct ratings, imported priors, favorites, model predictions, focused decisions, and ranking settings. A reset marker prevents an older synchronized browser or Firestore copy from restoring cleared data.
+The **My Agenda** tab turns those predictions into an actionable daily timeline. Each oral block shows a recommended room, backup room, confidence, and supporting papers. Poster blocks collect favorites, explicitly planned papers, and the highest-ranked candidates up to the configured visit target. Overlapping oral and poster blocks are flagged. When every room choice and poster cutoff is stable, smart ranking pauses automatically; users can still continue exploring or focus a specific decision.
+
+New users can select broad topic interests or star 5–15 papers to create an immediate provisional model. Topic selections are deliberately weaker seeds than explicit favorites, and both are superseded by direct comparisons as evidence accumulates. Recommendation explanations state whether a result comes from a favorite, a direct review, a selected topic, a semantic neighbor, or a lower-confidence model estimate.
+
+The embedding workspace can label favorites, show named semantic areas, or reduce the plot to favorites and their nearest semantic neighbors. Favorite papers are rendered once as stars; ordinary papers remain circles and search matches use a separate outline.
+
+**Full reset** clears every preference and workflow signal for the current conference and account: comparisons, direct ratings, imported priors, favorites, topic interests, personal status/tags/notes, model predictions, focused decisions, and ranking settings. A reset marker prevents an older synchronized browser or Firestore copy from restoring cleared data.
 
 ## Ranking backups
 
@@ -109,7 +119,7 @@ The static app supports Google sign-in and Firestore without operating a custom 
 
 Signing out stops cloud access but keeps the last synchronized ranking available on that device. Comparisons made while signed out are merged back into Firestore when the same account signs in again. Because that local copy remains visible, clear the site's browser data after signing out on a shared device.
 
-Cloud sync is opt-in and fails back to local storage. Follow [FIREBASE_SETUP.md](FIREBASE_SETUP.md) to create the free Firebase project, deploy the included security rules, add the public web configuration, and enable synchronization.
+Favorite changes, topic interests, and personal paper plans use per-record timestamps so concurrent edits merge safely across devices. Cloud sync is opt-in and fails back to local storage. Follow [FIREBASE_SETUP.md](FIREBASE_SETUP.md) to create the free Firebase project, deploy the included security rules, add the public web configuration, and enable synchronization.
 
 ## Common commands
 
@@ -139,10 +149,11 @@ make serve
 
 Then open `http://localhost:8000/docs/`.
 
-Normal builds preserve the checked-in 2D projections so UMAP coordinates do not drift between environments. Recompute PCA, t-SNE, and UMAP only when embeddings or projection settings intentionally change:
+Normal builds preserve the checked-in 2D projections and compact preference features so coordinates and semantic clusters do not drift between environments. Recompute them only when embeddings or projection/model settings intentionally change:
 
 ```bash
 python -m src.pipeline.build --rebuild-projections
+python -m src.pipeline.build --rebuild-preference-features
 ```
 
 ## Adding another conference

@@ -16,6 +16,8 @@ const state = {
   legendColorBy: null,
   ratings: {},
   favorites: {},
+  clusters: {},
+  clusterLabels: {},
   colorMaps: {
     Session: {},
     'Room Location': {},
@@ -80,7 +82,8 @@ function requestFavoriteToggle(paperId) {
   renderSelectionTable();
   renderNeighbors(state.lastNeighbors);
   if (state.currentClickedPaperId === String(paperId)) updateDetailFavoriteButton();
-  if (state.currentPoints.length > 0) renderPlot(state.currentPoints, state.lastPlotMeta.colorBy, state.lastPlotMeta.mode);
+  if (qs('favorite-neighborhood-toggle')?.checked) runProjection();
+  else if (state.currentPoints.length > 0) renderPlot(state.currentPoints, state.lastPlotMeta.colorBy, state.lastPlotMeta.mode);
 }
 
 function buildRankMap() {
@@ -346,6 +349,15 @@ function projectLocally(payload) {
     records = records.filter((row) => titleMatchesTerms(row.title, terms));
   }
 
+  if (payload?.favorite_neighborhood) {
+    const favoriteIds = Object.entries(state.favorites || {}).filter(([, favorite]) => favorite?.selected).map(([paperId]) => String(paperId));
+    const allowed = new Set(favoriteIds);
+    for (const favoriteId of favoriteIds) {
+      for (const neighbor of (state.staticNeighbors?.[favoriteId] || []).slice(0, 12)) allowed.add(String(neighbor.paper_id));
+    }
+    records = records.filter((row) => allowed.has(row.paper_id));
+  }
+
   const nFiltered = records.length;
   const randomState = Number(payload?.params?.random_state ?? 42);
   const sampled = sampleRecords(records, payload?.sample || {}, randomState);
@@ -566,6 +578,7 @@ function buildProjectPayload() {
       strategy: qs('sample-strategy').value,
     },
     oral_only: qs('oral-only-toggle').checked,
+    favorite_neighborhood: qs('favorite-neighborhood-toggle').checked,
     search_text: qs('search-text').value.trim(),
     search_mode: qs('search-mode').value,
   };
@@ -579,6 +592,130 @@ function pointHoverTemplate(mode, favorite = false) {
     return `<b>%{customdata[1]}</b><br>paper_id: %{customdata[0]}<br>rank: %{customdata[6]}<br>Room: %{customdata[3]}${favoriteLabel}<extra></extra>`;
   }
   return `<b>%{customdata[1]}</b><br>paper_id: %{customdata[0]}<br>rank: %{customdata[6]}${favoriteLabel}<extra></extra>`;
+}
+
+function escapeAnnotationText(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
+}
+
+function compactPlotLabel(value, maxLength = 30) {
+  const text = String(value || '').trim();
+  if (text.length <= maxLength) return text;
+  const prefix = text.slice(0, maxLength - 1);
+  const breakAt = prefix.lastIndexOf(' ');
+  return `${prefix.slice(0, breakAt >= Math.floor(maxLength * 0.55) ? breakAt : prefix.length).trim()}…`;
+}
+
+function overlapArea(a, b) {
+  const width = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+  const height = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+  return width * height;
+}
+
+function favoriteLabelAnnotations(points, axisRanges = null) {
+  if (!qs('favorite-labels-toggle').checked) return [];
+  let favorites = points.filter((point) => (
+    isFavorite(point.paper_id)
+    && !state.hiddenCategories.has(String(point.color_value || 'Unknown'))
+  ));
+  if (!favorites.length) return [];
+
+  const plot = qs('plot');
+  const margin = plotMarginForViewport();
+  const plotWidth = Math.max(480, (plot.clientWidth || 960) - margin.l - margin.r);
+  const plotHeight = Math.max(320, (plot.clientHeight || 640) - margin.t - margin.b);
+  const xValues = points.map((point) => Number(point.x)).filter(Number.isFinite);
+  const yValues = points.map((point) => Number(point.y)).filter(Number.isFinite);
+  const validXRange = Array.isArray(axisRanges?.x) && axisRanges.x.length === 2 && axisRanges.x.every(Number.isFinite);
+  const validYRange = Array.isArray(axisRanges?.y) && axisRanges.y.length === 2 && axisRanges.y.every(Number.isFinite);
+  const xMin = validXRange ? Math.min(...axisRanges.x) : Math.min(...xValues);
+  const xMax = validXRange ? Math.max(...axisRanges.x) : Math.max(...xValues);
+  const yMin = validYRange ? Math.min(...axisRanges.y) : Math.min(...yValues);
+  const yMax = validYRange ? Math.max(...axisRanges.y) : Math.max(...yValues);
+  const xPad = validXRange ? 0 : Math.max(1e-9, (xMax - xMin) * 0.04);
+  const yPad = validYRange ? 0 : Math.max(1e-9, (yMax - yMin) * 0.04);
+  const xSpan = Math.max(1e-9, xMax - xMin + 2 * xPad);
+  const ySpan = Math.max(1e-9, yMax - yMin + 2 * yPad);
+  if (validXRange || validYRange) {
+    favorites = favorites.filter((point) => (
+      (!validXRange || (Number(point.x) >= xMin && Number(point.x) <= xMax))
+      && (!validYRange || (Number(point.y) >= yMin && Number(point.y) <= yMax))
+    ));
+  }
+  const toPixel = (point) => ({
+    x: margin.l + ((Number(point.x) - xMin + xPad) / xSpan) * plotWidth,
+    y: margin.t + ((yMax - Number(point.y) + yPad) / ySpan) * plotHeight,
+  });
+  const markerRects = favorites.map((point) => {
+    const pixel = toPixel(point);
+    return { id: String(point.paper_id), left: pixel.x - 13, right: pixel.x + 13, top: pixel.y - 13, bottom: pixel.y + 13 };
+  });
+  const placed = [];
+  const rankMap = buildRankMap();
+  const ordered = [...favorites].sort((a, b) => (
+    (rankForPaperId(a.paper_id, rankMap) ?? Number.MAX_SAFE_INTEGER)
+    - (rankForPaperId(b.paper_id, rankMap) ?? Number.MAX_SAFE_INTEGER)
+    || String(a.paper_id).localeCompare(String(b.paper_id))
+  ));
+
+  return ordered.map((point) => {
+    const label = compactPlotLabel(point.title);
+    const width = Math.min(210, Math.max(72, label.length * 6.1 + 12));
+    const height = 22;
+    const horizontal = width / 2 + 20;
+    const vertical = height / 2 + 22;
+    const candidates = [
+      [horizontal, 0], [-horizontal, 0], [0, -vertical], [0, vertical],
+      [horizontal, -vertical], [-horizontal, -vertical], [horizontal, vertical], [-horizontal, vertical],
+      [horizontal, -52], [-horizontal, -52], [horizontal, 52], [-horizontal, 52],
+      [0, -68], [0, 68], [horizontal + 34, 0], [-horizontal - 34, 0],
+    ];
+    const anchor = toPixel(point);
+    let best = null;
+    for (const [ax, ay] of candidates) {
+      const centerX = anchor.x + ax; const centerY = anchor.y + ay;
+      const rect = { left: centerX - width / 2, right: centerX + width / 2, top: centerY - height / 2, bottom: centerY + height / 2 };
+      const labelOverlap = placed.reduce((sum, other) => sum + overlapArea(rect, other), 0);
+      const markerOverlap = markerRects.filter((marker) => marker.id !== String(point.paper_id)).reduce((sum, marker) => sum + overlapArea(rect, marker), 0);
+      const outside = Math.max(0, margin.l - rect.left) + Math.max(0, rect.right - (margin.l + plotWidth))
+        + Math.max(0, margin.t - rect.top) + Math.max(0, rect.bottom - (margin.t + plotHeight));
+      const score = labelOverlap * 40 + markerOverlap * 65 + outside * 500 + Math.hypot(ax, ay) * 0.08;
+      if (!best || score < best.score) best = { ax, ay, rect, score };
+    }
+    placed.push(best.rect);
+    return {
+      x: point.x, y: point.y, xref: 'x', yref: 'y',
+      text: escapeAnnotationText(label),
+      hovertext: escapeAnnotationText(point.title),
+      showarrow: true, arrowhead: 0, arrowwidth: 1, arrowsize: 0.7,
+      arrowcolor: 'rgba(51, 65, 85, 0.55)', ax: best.ax, ay: best.ay,
+      bgcolor: 'rgba(255, 255, 255, 0.88)', bordercolor: 'rgba(148, 163, 184, 0.55)', borderwidth: 1, borderpad: 2,
+      font: { size: 10, color: '#334155' }, align: 'left', captureevents: false,
+    };
+  });
+}
+
+function currentPlotAxisRanges(plot) {
+  const x = plot?._fullLayout?.xaxis?.range || plot?.layout?.xaxis?.range;
+  const y = plot?._fullLayout?.yaxis?.range || plot?.layout?.yaxis?.range;
+  return {
+    x: Array.isArray(x) ? x.map(Number) : null,
+    y: Array.isArray(y) ? y.map(Number) : null,
+  };
+}
+
+let favoriteLabelLayoutFrame = null;
+function refreshFavoriteLabelLayout() {
+  const plot = qs('plot');
+  if (!plot?.data || !state.currentPoints.length) return;
+  if (favoriteLabelLayoutFrame != null) cancelAnimationFrame(favoriteLabelLayoutFrame);
+  favoriteLabelLayoutFrame = requestAnimationFrame(() => {
+    favoriteLabelLayoutFrame = null;
+    Plotly.relayout(plot, { annotations: favoriteLabelAnnotations(state.currentPoints, currentPlotAxisRanges(plot)) });
+  });
 }
 
 function toTableRowFromPoint(point, rankMap = null) {
@@ -685,6 +822,27 @@ function buildTraces(points, mode, colorBy) {
     });
   }
 
+  if (qs('cluster-labels-toggle').checked && Object.keys(state.clusters || {}).length) {
+    const byCluster = new Map();
+    for (const point of points) {
+      const cluster = state.clusters[String(point.paper_id)];
+      if (cluster == null) continue;
+      if (!byCluster.has(String(cluster))) byCluster.set(String(cluster), []);
+      byCluster.get(String(cluster)).push(point);
+    }
+    const centroids = [...byCluster.entries()].map(([cluster, clusterPoints]) => ({
+      cluster,
+      x: clusterPoints.reduce((sum, point) => sum + point.x, 0) / clusterPoints.length,
+      y: clusterPoints.reduce((sum, point) => sum + point.y, 0) / clusterPoints.length,
+      label: state.clusterLabels[String(cluster)] || `Area ${Number(cluster) + 1}`,
+    }));
+    traces.push({
+      type: 'scatter', mode: 'text', name: 'Semantic areas',
+      x: centroids.map((item) => item.x), y: centroids.map((item) => item.y), text: centroids.map((item) => item.label),
+      textfont: { size: 11, color: '#0f172a' }, hoverinfo: 'skip', showlegend: false,
+    });
+  }
+
   const matched = points.filter((p) => p.matched && !state.hiddenCategories.has(String(p.color_value || 'Unknown')));
   if (matched.length > 0 && qs('search-mode').value === 'highlight' && qs('search-text').value.trim()) {
     traces.push({
@@ -785,6 +943,7 @@ function renderPlot(points, colorBy, mode) {
       yaxis: { title: 'Dimension 2', automargin: true },
       showlegend: false,
       hovermode: 'closest',
+      annotations: favoriteLabelAnnotations(points),
       uirevision: `${state.lastRequestPayload?.method || 'projection'}-${colorBy}`,
     },
     {
@@ -797,6 +956,7 @@ function renderPlot(points, colorBy, mode) {
 
   plot.removeAllListeners('plotly_selected');
   plot.removeAllListeners('plotly_click');
+  plot.removeAllListeners('plotly_relayout');
 
   plot.on('plotly_selected', (ev) => {
     if (!ev || !ev.points) {
@@ -822,6 +982,14 @@ function renderPlot(points, colorBy, mode) {
     renderDetails({ paper_id, title, session, room_location, type_presentation, attendance_type });
     await refreshNeighbors();
   });
+
+  plot.on('plotly_relayout', (eventData) => {
+    const viewportChanged = Object.keys(eventData || {}).some((key) => (
+      key.startsWith('xaxis.range') || key.startsWith('yaxis.range')
+      || key === 'xaxis.autorange' || key === 'yaxis.autorange'
+    ));
+    if (viewportChanged) refreshFavoriteLabelLayout();
+  });
 }
 
 function requestPlotResize({ updateMargins = false } = {}) {
@@ -830,6 +998,7 @@ function requestPlotResize({ updateMargins = false } = {}) {
   const applyResize = () => {
     Plotly.Plots.resize(plot);
     if (updateMargins) Plotly.relayout(plot, { margin: plotMarginForViewport() });
+    refreshFavoriteLabelLayout();
   };
   requestAnimationFrame(applyResize);
 }
@@ -1046,6 +1215,9 @@ function collectViewState() {
       strategy: qs('sample-strategy').value,
     },
     oral_only: qs('oral-only-toggle').checked,
+    favorite_neighborhood: qs('favorite-neighborhood-toggle').checked,
+    favorite_labels: qs('favorite-labels-toggle').checked,
+    cluster_labels: qs('cluster-labels-toggle').checked,
     search_text: qs('search-text').value,
     search_mode: qs('search-mode').value,
   };
@@ -1102,6 +1274,9 @@ function applyViewState(saved) {
   if (saved.oral_only != null) {
     qs('oral-only-toggle').checked = !!saved.oral_only;
   }
+  if (saved.favorite_neighborhood != null) qs('favorite-neighborhood-toggle').checked = !!saved.favorite_neighborhood;
+  if (saved.favorite_labels != null) qs('favorite-labels-toggle').checked = !!saved.favorite_labels;
+  if (saved.cluster_labels != null) qs('cluster-labels-toggle').checked = !!saved.cluster_labels;
 
   if (saved.search_text != null) qs('search-text').value = saved.search_text;
   if (saved.search_mode) qs('search-mode').value = saved.search_mode;
@@ -1181,6 +1356,9 @@ function wireEvents() {
   });
 
   qs('run-btn').addEventListener('click', runProjection);
+  qs('favorite-neighborhood-toggle').addEventListener('change', runProjection);
+  qs('favorite-labels-toggle').addEventListener('change', () => renderPlot(state.currentPoints, state.lastPlotMeta.colorBy, state.lastPlotMeta.mode));
+  qs('cluster-labels-toggle').addEventListener('change', () => renderPlot(state.currentPoints, state.lastPlotMeta.colorBy, state.lastPlotMeta.mode));
   qs('reset-filters-btn').addEventListener('click', resetFilters);
   qs('export-selected-btn').addEventListener('click', exportSelectedIds);
   qs('export-projection-btn').addEventListener('click', exportProjection);
@@ -1292,18 +1470,32 @@ window.addEventListener('message', (event) => {
   }
   if (data.type !== 'ranking_state_update') return;
   let rankingStateChanged = false;
+  let favoritesChanged = false;
+  let clusterStateChanged = false;
   if (data.payload?.ratings && typeof data.payload.ratings === 'object') {
+    const changed = JSON.stringify(data.payload.ratings) !== JSON.stringify(state.ratings);
     state.ratings = data.payload.ratings;
-    rankingStateChanged = true;
+    rankingStateChanged ||= changed;
   }
   if (data.payload?.favorites && typeof data.payload.favorites === 'object') {
+    favoritesChanged = JSON.stringify(data.payload.favorites) !== JSON.stringify(state.favorites);
     state.favorites = data.payload.favorites;
-    rankingStateChanged = true;
+    rankingStateChanged ||= favoritesChanged;
   }
-  if (rankingStateChanged) {
+  if (data.payload?.clusters && typeof data.payload.clusters === 'object') {
+    clusterStateChanged ||= JSON.stringify(data.payload.clusters) !== JSON.stringify(state.clusters);
+    state.clusters = data.payload.clusters;
+  }
+  if (data.payload?.clusterLabels && typeof data.payload.clusterLabels === 'object') {
+    clusterStateChanged ||= JSON.stringify(data.payload.clusterLabels) !== JSON.stringify(state.clusterLabels);
+    state.clusterLabels = data.payload.clusterLabels;
+  }
+  if (rankingStateChanged || clusterStateChanged) {
     renderSelectionTable();
     if (state.lastNeighbors.length > 0) renderNeighbors(state.lastNeighbors);
-    if (state.currentPoints.length > 0) {
+    if (favoritesChanged && qs('favorite-neighborhood-toggle')?.checked) {
+      runProjection();
+    } else if (state.currentPoints.length > 0) {
       renderPlot(state.currentPoints, state.lastPlotMeta.colorBy, state.lastPlotMeta.mode);
     }
   }

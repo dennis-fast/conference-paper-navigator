@@ -15,14 +15,16 @@ export function mergeComparisonData(local, remote) {
   };
 }
 
-export function mergeFavorites(localFavorites = {}, remoteFavorites = {}) {
-  const favorites = {};
-  for (const paperId of new Set([...Object.keys(localFavorites), ...Object.keys(remoteFavorites)])) {
-    const local = localFavorites[paperId];
-    const remote = remoteFavorites[paperId];
-    if (!local) favorites[paperId] = remote;
-    else if (!remote) favorites[paperId] = local;
-    else favorites[paperId] = (local.modified_at || "") >= (remote.modified_at || "") ? local : remote;
+export function mergeTimestampedRecords(localRecords = {}, remoteRecords = {}) {
+  const records = {};
+  for (const key of new Set([...Object.keys(localRecords), ...Object.keys(remoteRecords)])) {
+    const local = localRecords[key];
+    const remote = remoteRecords[key];
+    if (!local) records[key] = remote;
+    else if (!remote) records[key] = local;
+    else records[key] = (local.modified_at || "") >= (remote.modified_at || "") ? local : remote;
   }
-  return favorites;
+  return records;
 }
+
+export const mergeFavorites = mergeTimestampedRecords;

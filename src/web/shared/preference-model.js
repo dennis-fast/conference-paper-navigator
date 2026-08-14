@@ -48,6 +48,7 @@ function trainingExamples(bundle, state, featureById) {
   const pointwise = [];
   const favorites = selectedFavorites(state);
   const favoriteSet = new Set(favorites);
+  const topicSeeds = [...new Set((state.seedPaperIds || []).map(String))].filter((paperId) => !favoriteSet.has(paperId));
 
   for (const paperId of favorites) {
     const positive = featureById.get(paperId);
@@ -57,6 +58,11 @@ function trainingExamples(bundle, state, featureById) {
       const reference = featureById.get(referenceId);
       if (reference) pairwise.push({ x: subtract(positive, reference), y: 1, weight: 0.5 });
     }
+  }
+
+  for (const paperId of topicSeeds) {
+    const positive = featureById.get(paperId);
+    if (positive) pointwise.push({ x: positive, y: 1, weight: 0.12 });
   }
 
   for (const entry of state.history || []) {
@@ -73,7 +79,7 @@ function trainingExamples(bundle, state, featureById) {
       pairwise.push({ x: subtract(a, b), y: Number(entry.outcome), weight });
     }
   }
-  return { pairwise, pointwise, favorites };
+  return { pairwise, pointwise, favorites, topicSeeds };
 }
 
 function update(weights, bias, example, learningRate, includeBias) {
@@ -93,6 +99,7 @@ export function trainPreferenceModel(bundle, state) {
   const signalCount = examples.pairwise.length + examples.pointwise.length;
   const directlySeen = new Set([
     ...examples.favorites,
+    ...examples.topicSeeds,
     ...(state.history || []).flatMap((entry) => entry.outcome == null ? [] : [String(entry.a), String(entry.b)]),
   ]);
   if (!signalCount) {

@@ -354,6 +354,20 @@ button:disabled {
   line-height: 1.35;
 }
 
+.marker-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin: 7px 0 9px;
+  color: #64748b;
+  font-size: 0.75rem;
+}
+
+.marker-legend span { display: inline-flex; align-items: center; gap: 4px; }
+.marker-circle { width: 9px; height: 9px; border-radius: 50%; background: #4c6178; }
+.marker-star { color: #d97706; font-style: normal; font-size: 15px; line-height: 1; }
+.marker-ring { width: 11px; height: 11px; border: 2px solid #d92d20; border-radius: 50%; }
+
 #category-legend {
   display: grid;
   gap: 3px;

@@ -176,7 +176,14 @@ def _copy(src: Path, dst: Path) -> None:
     shutil.copy2(src, dst)
 
 
-def build_conference(conference_id: str, *, cached_projection: bytes | None = None, rebuild_projection: bool = False) -> None:
+def build_conference(
+    conference_id: str,
+    *,
+    cached_projection: bytes | None = None,
+    cached_preference: bytes | None = None,
+    rebuild_projection: bool = False,
+    rebuild_preference: bool = False,
+) -> None:
     base = CONFERENCES_DIR / conference_id
     profile = json.loads((base / "conference.json").read_text(encoding="utf-8"))
     dataset = json.loads((base / "data" / "papers.json").read_text(encoding="utf-8"))
@@ -207,10 +214,13 @@ def build_conference(conference_id: str, *, cached_projection: bytes | None = No
     else:
         projection = build_projection(profile, dataset, base / "data" / "embeddings.npz")
         projection_path.write_text(json.dumps(projection, ensure_ascii=False), encoding="utf-8")
-    preference = build_preference_features(profile, dataset, base / "data" / "embeddings.npz")
-    (destination / "data" / "preference-features.json").write_text(
-        json.dumps(preference, ensure_ascii=False, separators=(",", ":")), encoding="utf-8"
-    )
+    preference_path = destination / "data" / "preference-features.json"
+    if cached_preference is not None and not rebuild_preference:
+        preference_path.write_bytes(cached_preference)
+        preference = json.loads(cached_preference)
+    else:
+        preference = build_preference_features(profile, dataset, base / "data" / "embeddings.npz")
+        preference_path.write_text(json.dumps(preference, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     print(
         f"built {conference_id}: {len(dataset['papers'])} papers, {projection['n_points']} projected, "
         f"{preference['dimensions']} preference dimensions"
@@ -240,12 +250,22 @@ def main() -> None:
         action="store_true",
         help="Explicitly recompute PCA, t-SNE, and UMAP instead of preserving checked-in projections",
     )
+    parser.add_argument(
+        "--rebuild-preference-features",
+        action="store_true",
+        help="Explicitly recompute browser preference PCA and clusters instead of preserving checked-in features",
+    )
     args = parser.parse_args()
     ids = args.conference or conference_ids()
     cached_projections = {
         conference_id: (DOCS_DIR / conference_id / "data" / "projection.json").read_bytes()
         for conference_id in ids
         if (DOCS_DIR / conference_id / "data" / "projection.json").exists()
+    }
+    cached_preferences = {
+        conference_id: (DOCS_DIR / conference_id / "data" / "preference-features.json").read_bytes()
+        for conference_id in ids
+        if (DOCS_DIR / conference_id / "data" / "preference-features.json").exists()
     }
     if args.conference:
         for conference_id in ids:
@@ -258,7 +278,9 @@ def main() -> None:
         build_conference(
             conference_id,
             cached_projection=cached_projections.get(conference_id),
+            cached_preference=cached_preferences.get(conference_id),
             rebuild_projection=args.rebuild_projections,
+            rebuild_preference=args.rebuild_preference_features,
         )
     build_landing(conference_ids())
 
