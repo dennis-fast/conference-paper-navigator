@@ -3,6 +3,7 @@
   --text:#e9efff; --line:#26324a; --chip:#1c2842;
 }
 *{box-sizing:border-box}
+html,body{max-width:100%;overflow-x:hidden}
 body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:var(--bg);color:var(--text)}
 code{background:rgba(255,255,255,.08);padding:2px 6px;border-radius:8px}
 .topbar{
@@ -16,6 +17,9 @@ code{background:rgba(255,255,255,.08);padding:2px 6px;border-radius:8px}
 .title .sub{color:var(--muted);font-size:13px;margin-top:4px}
 .back-link{display:inline-block;color:#7dd3fc;text-decoration:none;font-size:12px;margin-bottom:4px}
 .controls{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}
+.data-menu{display:contents}
+.data-menu>summary{display:none}
+.data-menu-actions{display:flex;flex-wrap:wrap;gap:10px;justify-content:flex-end}
 .cloud-status{align-self:center;color:var(--muted);font-size:12px;max-width:240px}
 .btn{
   background:var(--chip);color:var(--text);
@@ -155,6 +159,10 @@ body.viz-active .wrap{max-width:none}
 .schedule-table{width:100%;border-collapse:collapse;font-size:12px}
 .schedule-table th,.schedule-table td{border-top:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
 .schedule-table th{color:var(--muted);font-weight:700;background:rgba(255,255,255,.02)}
+.schedule-paper{display:grid;grid-template-columns:auto minmax(0,1fr);gap:7px;align-items:start;padding:5px 0;overflow-wrap:anywhere}
+.schedule-paper:first-child{padding-top:0}.schedule-paper:last-child{padding-bottom:0}
+.schedule-paper+.schedule-paper{border-top:1px solid var(--line)}
+.schedule-paper-actions{display:flex;gap:5px;align-items:center}
 
 /* Posters */
 .poster-root{display:grid;gap:12px;margin-top:10px}
@@ -204,9 +212,52 @@ body.viz-active .wrap{max-width:none}
 .paper-planner form{display:grid;gap:12px;padding:16px}.paper-planner label{display:grid;gap:6px;color:var(--muted);font-size:13px}.paper-planner input,.paper-planner select,.paper-planner textarea{width:100%;background:var(--card);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:9px;font:inherit}.planner-head,.planner-actions{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}.planner-actions{justify-content:flex-end}.planner-close{appearance:none;border:0;background:transparent;color:var(--muted);font-size:25px;cursor:pointer}
 @media(max-width:760px){.agenda-item{grid-template-columns:76px minmax(0,1fr)}.agenda-item-actions{grid-column:2;flex-direction:row;align-items:center}.onboarding-steps{grid-template-columns:1fr}.agenda-toolbar{align-items:flex-start;flex-direction:column}}
 
+@media (max-width:700px){
+  .topbar{position:relative;display:block;padding:12px}
+  .title .h1{font-size:20px}.title .sub{line-height:1.4;max-width:42ch}
+  .controls{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin-top:12px;justify-content:stretch}
+  .controls>.cloud-status{grid-column:1/-1;max-width:none;min-height:18px}
+  .controls>.btn{width:100%;min-width:0}
+  .data-menu{display:block;grid-column:1/-1}
+  .data-menu>summary{display:block;width:100%;text-align:center;list-style:none}
+  .data-menu>summary::-webkit-details-marker{display:none}
+  .data-menu:not([open])>.data-menu-actions{display:none}
+  .data-menu-actions{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;margin-top:8px}
+  .data-menu-actions>.btn{width:100%;min-width:0;text-align:center}
+  .wrap{width:100%;max-width:none;padding:10px}
+  .panel,.arena{min-width:0;padding:10px;border-radius:12px}
+  .tabs{width:calc(100% + 20px);margin-left:-10px;margin-right:-10px;padding:0 10px 8px;overflow-x:auto;overscroll-behavior-inline:contain;scroll-snap-type:x proximity;scrollbar-width:none}
+  .tabs::-webkit-scrollbar{display:none}
+  .tab{flex:0 0 auto;white-space:nowrap;scroll-snap-align:start;padding:8px 11px}
+  .panel-row{display:block;min-width:0}
+  .panel-row>.filters{margin-top:10px}
+  .stats{gap:6px}.pill{padding:5px 8px}
+  .filters{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);width:100%;gap:8px}
+  .filters>*{min-width:0!important;width:100%!important}
+  .filters input:not([type="checkbox"]),.filters select{min-width:0;width:100%}
+  .filters #search,.filters #trackFilter,.filters #categoryFilter{grid-column:1/-1;min-width:0}
+  .top-filter-check,.wins-only-control{white-space:normal;line-height:1.25;min-height:42px}
+  .schedule-day,.poster-day,.schedule-slot,.poster-slot{min-width:0}
+  .schedule-slot{padding:10px}
+  .schedule-table,.poster-table,.schedule-table tbody,.poster-table tbody{display:block;width:100%;min-width:0}
+  .schedule-table thead,.poster-table thead{display:none}
+  .schedule-table tr,.poster-table tr{display:block;width:100%;min-width:0;margin-top:9px;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:rgba(255,255,255,.02)}
+  .schedule-table td,.poster-table td{position:relative;display:block;width:100%;min-width:0;min-height:37px;padding:8px 9px 8px 106px;border-top:1px solid var(--line);overflow-wrap:anywhere}
+  .schedule-table td:first-child,.poster-table td:first-child{border-top:0}
+  .schedule-table td::before,.poster-table td::before{content:attr(data-label);position:absolute;top:10px;left:9px;width:88px;color:var(--muted);font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.03em}
+  .schedule-paper{grid-template-columns:1fr;padding:8px 0}
+  .schedule-paper-actions{margin-bottom:2px}
+  .poster-table .favorite-btn{width:30px;height:30px;min-width:30px;font-size:19px}
+  .arena-head,.progress-head{align-items:flex-start;flex-direction:column}
+  .arena-actions{width:100%}.arena-actions .btn{flex:1 1 calc(33.333% - 8px)}
+  .paper-heading{min-width:0}.paper-heading>.paper-actions{flex:0 0 auto}
+  .planner-actions .btn{flex:1}
+}
+
 /* Viz */
 #vizFrame{width:100%;height:84vh;min-height:720px;border:1px solid var(--line);border-radius:10px;background:#fff}
 @media (max-width: 900px){#vizFrame{height:80vh;min-height:620px}}
+@media (max-width: 700px){#vizFrame{height:76vh;min-height:540px}}
 
 @media print{
   body{background:#fff;color:#111}.topbar,.wrap>.panel:first-child,.tab-panel:not(#tab-agenda),#onboardingPanel,.agenda-actions,.agenda-item-actions{display:none!important}

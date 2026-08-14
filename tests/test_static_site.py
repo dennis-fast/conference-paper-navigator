@@ -256,6 +256,18 @@ if (result.pair[0].id === result.pair[1].id) throw new Error("invalid pair");
         self.assertIn("renderCategoryLegend", viz_source)
         self.assertIn("if (layout.classList.contains(className) === collapsed) return;", viz_source)
 
+    def test_mobile_layout_uses_compact_controls_and_schedule_cards(self):
+        shell_html = (ROOT / "src" / "web" / "app" / "index.html").read_text(encoding="utf-8")
+        shell_css = (ROOT / "src" / "web" / "app" / "styles.css").read_text(encoding="utf-8")
+        app_source = (ROOT / "src" / "web" / "app" / "app.js").read_text(encoding="utf-8")
+
+        self.assertIn('class="data-menu"', shell_html)
+        self.assertIn("@media (max-width:700px)", shell_css)
+        self.assertIn("overflow-x:auto", shell_css)
+        self.assertIn("content:attr(data-label)", shell_css)
+        for label in ("Pick", "Room", "Top papers", "Priority", "Location", "Personal"):
+            self.assertIn(f'data-label="{label}"', app_source)
+
     def test_normal_builds_preserve_checked_in_projections(self):
         source = (ROOT / "src" / "pipeline" / "build.py").read_text(encoding="utf-8")
         self.assertIn('"--rebuild-projections"', source)

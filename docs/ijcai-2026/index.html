@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Conference Paper Navigator</title>
-  <link rel="stylesheet" href="./assets/css/styles.css" />
+  <link rel="stylesheet" href="./assets/css/styles.css?v=20260814-mobile-v1" />
 </head>
 <body>
 <header class="topbar">
@@ -17,11 +17,16 @@
     <span class="cloud-status" id="cloudStatus" aria-live="polite">Checking cloud sync…</span>
     <button class="btn cloud" id="btnSignIn" hidden>Sign in with Google</button>
     <button class="btn cloud" id="btnSignOut" hidden>Sign out</button>
-    <label class="btn">Load dataset<input id="datasetFile" type="file" accept=".json,application/json" /></label>
-    <button class="btn" id="btnReset">Full reset</button>
-    <label class="btn">Import rankings<input id="stateFile" type="file" accept=".json,application/json" /></label>
-    <button class="btn" id="btnExportState">Export rankings</button>
-    <button class="btn" id="btnExportCSV">Export scored CSV</button>
+    <details class="data-menu">
+      <summary class="btn">Data &amp; backup</summary>
+      <div class="data-menu-actions">
+        <label class="btn">Load dataset<input id="datasetFile" type="file" accept=".json,application/json" /></label>
+        <button class="btn" id="btnReset">Full reset</button>
+        <label class="btn">Import rankings<input id="stateFile" type="file" accept=".json,application/json" /></label>
+        <button class="btn" id="btnExportState">Export rankings</button>
+        <button class="btn" id="btnExportCSV">Export scored CSV</button>
+      </div>
+    </details>
   </div>
 </header>
 
@@ -112,6 +117,6 @@
     <div class="planner-actions"><button class="btn secondary" value="cancel">Cancel</button><button class="btn" id="plannerSave" value="default">Save plan</button></div>
   </form>
 </dialog>
-<script type="module" src="./assets/js/app.js?v=20260814-stable-updates-v3"></script>
+<script type="module" src="./assets/js/app.js?v=20260814-mobile-v1"></script>
 </body>
 </html>
