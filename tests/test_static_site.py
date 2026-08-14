@@ -41,6 +41,22 @@ class StaticSiteContractTests(unittest.TestCase):
         self.assertIn("request.auth.uid == userId", rules)
         self.assertIn('"users", user.uid, "conferences", conferenceId', source)
         self.assertIn("runTransaction", source)
+        self.assertIn("syncStateWithRetry", source)
+        self.assertIn("pendingSync = { candidate: structuredClone(candidate), user }", source)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is not installed")
+    def test_cloud_sync_retries_version_conflicts(self):
+        source = (ROOT / "src" / "web" / "app" / "cloud-sync.js").read_text(encoding="utf-8")
+        source = re.sub(r'^import .*?;\n', "", source, flags=re.MULTILINE)
+        source = re.sub(r"\bexport\s+", "", source)
+        assertions = r"""
+if (!isRetryableSyncError({code: "aborted"})) throw new Error("aborted should retry");
+if (!isRetryableSyncError({code: "firestore/failed-precondition"})) throw new Error("failed precondition should retry");
+if (!isRetryableSyncError({message: "stored version 2 does not match the required base version 1"})) throw new Error("version conflict should retry");
+if (isRetryableSyncError({code: "permission-denied"})) throw new Error("permission errors must not retry");
+if (retryDelayMs(0) !== 250 || retryDelayMs(3) !== 2000) throw new Error("retry backoff is incorrect");
+"""
+        subprocess.run(["node", "--input-type=module", "--eval", source + assertions], check=True, capture_output=True, text=True)
 
     def test_rendering_does_not_mutate_ranking_state(self):
         source = (ROOT / "src" / "web" / "app" / "app.js").read_text(encoding="utf-8")

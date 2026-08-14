@@ -2,7 +2,7 @@ import { toCSV } from "./csv.js?v=20260814-stable-updates-v3";
 import { DEFAULT_MU, DEFAULT_SIGMA, MIN_SIGMA, SIGMA_DECAY, updatePair } from "./rating.js?v=20260814-stable-updates-v3";
 import { chooseNextPair } from "./selector.js?v=20260814-stable-updates-v3";
 import { blendPreferencePrediction, preferenceProgress, trainPreferenceModel } from "./preference-model.js?v=20260814-stable-updates-v3";
-import { initializeCloudSync } from "./cloud-sync.js?v=20260814-stable-updates-v3";
+import { initializeCloudSync } from "./cloud-sync.js?v=20260814-sync-retry-v1";
 import { mergeComparisonData, mergeTimestampedRecords } from "./merge-comparisons.js?v=20260814-stable-updates-v3";
 
 const BASE_K = 32;
