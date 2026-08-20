@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Conference Paper Navigator</title>
-  <link rel="stylesheet" href="./assets/css/styles.css?v=20260814-mobile-v1" />
+  <link rel="stylesheet" href="./assets/css/styles.css?v=20260820-overview-time-v1" />
 </head>
 <body>
 <header class="topbar">
@@ -81,7 +81,7 @@
     </section>
   </section>
 
-  <section id="tab-overview" class="tab-panel"><section class="panel"><div class="panel-row"><div class="h2">Paper Overview</div><div class="small">Grouped by day → session → location</div></div><div id="overview"></div></section></section>
+  <section id="tab-overview" class="tab-panel"><section class="panel"><div class="panel-row"><div class="h2">Paper Overview</div><div class="small">Grouped by day → session → room → time</div></div><div id="overview"></div></section></section>
   <section id="tab-viz" class="tab-panel"><section class="panel"><div class="panel-row"><div class="h2">Embedding Projection</div><div class="small">Precomputed PCA, t-SNE, and UMAP views.</div></div><iframe id="vizFrame" title="Embedding Visualization" src="./viz/?v=20260814-label-layout-v4" allow="fullscreen" allowfullscreen></iframe></section></section>
 
   <section id="tab-ranking" class="tab-panel">
@@ -117,6 +117,6 @@
     <div class="planner-actions"><button class="btn secondary" value="cancel">Cancel</button><button class="btn" id="plannerSave" value="default">Save plan</button></div>
   </form>
 </dialog>
-<script type="module" src="./assets/js/app.js?v=20260814-sync-retry-v1"></script>
+<script type="module" src="./assets/js/app.js?v=20260820-overview-time-v1"></script>
 </body>
 </html>

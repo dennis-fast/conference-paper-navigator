@@ -546,18 +546,26 @@ function renderOverview() {
     const day = paper.displayDate || "Unscheduled";
     const session = paper.displaySession || "No session";
     const location = paper.displayLocation || "No location";
+    const time = paper.displayTime || "Time unavailable";
     if (!groups.has(day)) groups.set(day, new Map());
     if (!groups.get(day).has(session)) groups.get(day).set(session, new Map());
-    if (!groups.get(day).get(session).has(location)) groups.get(day).get(session).set(location, []);
-    groups.get(day).get(session).get(location).push(paper);
+    if (!groups.get(day).get(session).has(location)) groups.get(day).get(session).set(location, new Map());
+    if (!groups.get(day).get(session).get(location).has(time)) groups.get(day).get(session).get(location).set(time, []);
+    groups.get(day).get(session).get(location).get(time).push(paper);
   }
   root.innerHTML = [...groups.keys()].sort((a, b) => dateSort(a) - dateSort(b)).map((day) => {
     const sessions = groups.get(day);
     const sessionHtml = [...sessions.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([session, locations]) => {
-      const locationHtml = [...locations.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([location, items]) => `
-        <details class="overview-location" open><summary>${esc(location)} <span class="small">(${items.length})</span></summary>
-          ${items.sort(comparePapers).map(paperHtml).join("")}
-        </details>`).join("");
+      const locationHtml = [...locations.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([location, times]) => {
+        const count = [...times.values()].reduce((total, items) => total + items.length, 0);
+        const timeHtml = [...times.entries()]
+          .sort(([a], [b]) => parseStartMinutes(a) - parseStartMinutes(b) || a.localeCompare(b))
+          .map(([time, items]) => `<details class="overview-time" open>
+            <summary>${esc(time)} <span class="small">(${items.length} paper${items.length === 1 ? "" : "s"})</span></summary>
+            <div class="overview-time-content">${items.sort(comparePapers).map(paperHtml).join("")}</div>
+          </details>`).join("");
+        return `<details class="overview-location" open><summary>${esc(location)} <span class="small">(${count})</span></summary>${timeHtml}</details>`;
+      }).join("");
       return `<details class="overview-session" open><summary>${esc(session)}</summary><div class="overview-content">${locationHtml}</div></details>`;
     }).join("");
     return `<details class="overview-date" open><summary>${esc(day)}</summary><div class="overview-content">${sessionHtml}</div></details>`;

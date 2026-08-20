@@ -284,6 +284,17 @@ if (result.pair[0].id === result.pair[1].id) throw new Error("invalid pair");
         for label in ("Pick", "Room", "Top papers", "Priority", "Location", "Personal"):
             self.assertIn(f'data-label="{label}"', app_source)
 
+    def test_overview_separates_room_contents_by_time(self):
+        app_source = (ROOT / "src" / "web" / "app" / "app.js").read_text(encoding="utf-8")
+        shell_html = (ROOT / "src" / "web" / "app" / "index.html").read_text(encoding="utf-8")
+        shell_css = (ROOT / "src" / "web" / "app" / "styles.css").read_text(encoding="utf-8")
+
+        self.assertIn('const time = paper.displayTime || "Time unavailable"', app_source)
+        self.assertIn('class="overview-time"', app_source)
+        self.assertIn("parseStartMinutes(a) - parseStartMinutes(b)", app_source)
+        self.assertIn("day → session → room → time", shell_html)
+        self.assertIn(".overview-time>summary", shell_css)
+
     def test_normal_builds_preserve_checked_in_projections(self):
         source = (ROOT / "src" / "pipeline" / "build.py").read_text(encoding="utf-8")
         self.assertIn('"--rebuild-projections"', source)

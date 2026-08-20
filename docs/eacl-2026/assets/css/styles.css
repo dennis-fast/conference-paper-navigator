@@ -98,12 +98,15 @@ body.viz-active .wrap{max-width:none}
 
 /* Overview */
 .overview-date{background:var(--card);border:1px solid var(--line);border-radius:12px;margin:10px 0;overflow:hidden}
-.overview-date summary{padding:12px;cursor:pointer;font-weight:800}
+.overview-date>summary{padding:12px;cursor:pointer;font-weight:800}
 .overview-session{background:var(--card);border:1px solid var(--line);border-radius:12px;margin:10px 0;overflow:hidden}
-.overview-session summary{padding:12px;cursor:pointer;font-weight:800}
+.overview-session>summary{padding:12px;cursor:pointer;font-weight:800}
 .overview-content{padding:0 10px 10px;border-top:1px solid var(--line)}
 .overview-location{border:1px solid var(--line);border-radius:10px;margin-top:10px;overflow:hidden}
-.overview-location summary{padding:8px 10px;cursor:pointer;background:rgba(255,255,255,.02)}
+.overview-location>summary{padding:8px 10px;cursor:pointer;background:rgba(255,255,255,.02);font-weight:700}
+.overview-time{border-top:1px solid var(--line)}
+.overview-time>summary{padding:8px 12px;cursor:pointer;background:rgba(255,255,255,.015);color:#bae6fd;font-weight:700}
+.overview-time-content{padding-left:12px;border-top:1px solid rgba(38,50,74,.7)}
 .paper{padding:10px;border-top:1px solid var(--line)}
 .paper:first-child{border-top:none}
 .paper .top{font-weight:800}
