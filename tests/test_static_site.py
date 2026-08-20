@@ -295,6 +295,22 @@ if (result.pair[0].id === result.pair[1].id) throw new Error("invalid pair");
         self.assertIn("day → session → room → time", shell_html)
         self.assertIn(".overview-time>summary", shell_css)
 
+    def test_rerenders_preserve_collapsed_sections(self):
+        app_source = (ROOT / "src" / "web" / "app" / "app.js").read_text(encoding="utf-8")
+        shell_html = (ROOT / "src" / "web" / "app" / "index.html").read_text(encoding="utf-8")
+
+        self.assertIn("const disclosureState = new Map()", app_source)
+        self.assertIn("function captureDisclosureState()", app_source)
+        self.assertIn("function restoreDisclosureState()", app_source)
+        self.assertIn('details[data-disclosure-key]', app_source)
+        self.assertIn('disclosureAttribute("overview", day, session, location, time)', app_source)
+        self.assertIn('disclosureAttribute("schedule", slot.date, slot.time)', app_source)
+        self.assertIn('disclosureAttribute("posters", day, time)', app_source)
+        self.assertIn('disclosureAttribute("agenda", date)', app_source)
+        self.assertIn("captureDisclosureState();\n  renderStats()", app_source)
+        self.assertIn("nextPair();\n  restoreDisclosureState();", app_source)
+        self.assertIn("20260820-disclosure-state-v1", shell_html)
+
     def test_normal_builds_preserve_checked_in_projections(self):
         source = (ROOT / "src" / "pipeline" / "build.py").read_text(encoding="utf-8")
         self.assertIn('"--rebuild-projections"', source)

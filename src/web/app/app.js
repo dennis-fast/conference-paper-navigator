@@ -22,6 +22,7 @@ let cloudSync = null;
 let preferenceBundle = null;
 let preferenceModel = null;
 let lastVisualizationFingerprint = "";
+const disclosureState = new Map();
 
 const el = (id) => document.getElementById(id);
 const esc = (value) => String(value ?? "")
@@ -30,6 +31,26 @@ const esc = (value) => String(value ?? "")
   .replaceAll(">", "&gt;")
   .replaceAll('"', "&quot;")
   .replaceAll("'", "&#039;");
+
+function disclosureKey(...parts) {
+  return parts.map((part) => String(part ?? "")).join("|||");
+}
+
+function disclosureAttribute(...parts) {
+  return `data-disclosure-key="${esc(disclosureKey(...parts))}"`;
+}
+
+function captureDisclosureState() {
+  document.querySelectorAll("details[data-disclosure-key]").forEach((details) => {
+    disclosureState.set(details.dataset.disclosureKey, details.open);
+  });
+}
+
+function restoreDisclosureState() {
+  document.querySelectorAll("details[data-disclosure-key]").forEach((details) => {
+    if (disclosureState.has(details.dataset.disclosureKey)) details.open = disclosureState.get(details.dataset.disclosureKey);
+  });
+}
 
 function guestStateKey() {
   return `conference-paper-navigator:${config.id}:ratings:v1`;
@@ -560,15 +581,15 @@ function renderOverview() {
         const count = [...times.values()].reduce((total, items) => total + items.length, 0);
         const timeHtml = [...times.entries()]
           .sort(([a], [b]) => parseStartMinutes(a) - parseStartMinutes(b) || a.localeCompare(b))
-          .map(([time, items]) => `<details class="overview-time" open>
+          .map(([time, items]) => `<details class="overview-time" ${disclosureAttribute("overview", day, session, location, time)} open>
             <summary>${esc(time)} <span class="small">(${items.length} paper${items.length === 1 ? "" : "s"})</span></summary>
             <div class="overview-time-content">${items.sort(comparePapers).map(paperHtml).join("")}</div>
           </details>`).join("");
-        return `<details class="overview-location" open><summary>${esc(location)} <span class="small">(${count})</span></summary>${timeHtml}</details>`;
+        return `<details class="overview-location" ${disclosureAttribute("overview", day, session, location)} open><summary>${esc(location)} <span class="small">(${count})</span></summary>${timeHtml}</details>`;
       }).join("");
-      return `<details class="overview-session" open><summary>${esc(session)}</summary><div class="overview-content">${locationHtml}</div></details>`;
+      return `<details class="overview-session" ${disclosureAttribute("overview", day, session)} open><summary>${esc(session)}</summary><div class="overview-content">${locationHtml}</div></details>`;
     }).join("");
-    return `<details class="overview-date" open><summary>${esc(day)}</summary><div class="overview-content">${sessionHtml}</div></details>`;
+    return `<details class="overview-date" ${disclosureAttribute("overview", day)} open><summary>${esc(day)}</summary><div class="overview-content">${sessionHtml}</div></details>`;
   }).join("");
 }
 
@@ -579,7 +600,7 @@ function paperHtml(paper) {
     <div class="meta"><span>${esc(paper.id)}</span><span>${esc(paper.authorsText || "Authors unavailable")}</span><span>${esc(paper.track || paper.cat1 || "Uncategorized")}</span><span>μ ${paper.mu.toFixed(1)}</span></div>
     <div class="schedule-badges">${badges || '<span class="chip">Schedule unavailable</span>'}</div>
     <div class="recommendation-reason">${esc(recommendationReason(paper))}</div>
-    <details class="abs"><summary>Abstract</summary><div>${esc(paper.abstract || "Abstract unavailable")}</div></details>
+    <details class="abs" ${disclosureAttribute("abstract", paper.id)}><summary>Abstract</summary><div>${esc(paper.abstract || "Abstract unavailable")}</div></details>
   </article>`;
 }
 
@@ -844,9 +865,9 @@ function renderOralSchedule() {
       const confidence = gap === Infinity ? "high" : gap > uncertainty * 0.25 ? "high" : gap > uncertainty * 0.1 ? "medium" : "unresolved";
       const rows = blocks.map((block, index) => `<tr><td data-label="Pick">${index === 0 ? "Primary" : index === 1 ? "Backup" : index + 1}</td><td data-label="Room">${esc(block.room)}</td><td data-label="Room utility">${block.utility.toFixed(1)}</td><td data-label="Favorites">${block.papers.filter((paper) => paper.favorite).length || "—"}</td><td data-label="Top papers">${block.papers.slice(0, 4).map((paper) => `<div class="schedule-paper"><div class="schedule-paper-actions">${favoriteButton(paper.id, "inline-star")} ${planButton(paper.id)}</div><div><strong>${esc(paper.title)}</strong><div class="recommendation-reason">${esc(recommendationReason(paper))}</div></div></div>`).join("")}</td></tr>`).join("");
       const key = `${slot.date}|||${slot.time}`;
-      return `<details class="schedule-slot" open><summary class="schedule-slot-title"><span>${esc(slot.time)} · <span class="confidence ${confidence}">${confidence}</span></span><button class="btn secondary compact-action" type="button" data-focus-kind="oral" data-focus-key="${esc(key)}">Resolve this slot</button></summary><table class="schedule-table"><thead><tr><th>Pick</th><th>Room</th><th>Room utility</th><th>Favorites</th><th>Top papers</th></tr></thead><tbody>${rows}</tbody></table></details>`;
+      return `<details class="schedule-slot" ${disclosureAttribute("schedule", slot.date, slot.time)} open><summary class="schedule-slot-title"><span>${esc(slot.time)} · <span class="confidence ${confidence}">${confidence}</span></span><button class="btn secondary compact-action" type="button" data-focus-kind="oral" data-focus-key="${esc(key)}">Resolve this slot</button></summary><table class="schedule-table"><thead><tr><th>Pick</th><th>Room</th><th>Room utility</th><th>Favorites</th><th>Top papers</th></tr></thead><tbody>${rows}</tbody></table></details>`;
     }).join("");
-    return `<details class="schedule-day" open><summary class="schedule-day-head">${esc(day)}</summary>${slotHtml}</details>`;
+    return `<details class="schedule-day" ${disclosureAttribute("schedule", day)} open><summary class="schedule-day-head">${esc(day)}</summary>${slotHtml}</details>`;
   }).join("");
 }
 
@@ -893,9 +914,9 @@ function renderPosters() {
         return `<tr><td data-label="Favorite">${favoriteButton(paper.id)}</td><td data-label="Priority"><span class="visit-status ${status.toLowerCase().replaceAll(" ", "-")}">${status}</span></td><td data-label="Rank">${rank.get(paper.id) || "—"}</td><td data-label="ID">${esc(paper.id)}</td><td data-label="Title">${esc(paper.title)}<div class="recommendation-reason">${esc(recommendationReason(paper))}</div></td><td data-label="Location">${esc(presentation.location || "—")}</td><td data-label="Score">${paper.mu.toFixed(1)} ± ${paper.sigma.toFixed(0)}</td><td data-label="Personal">${planButton(paper.id)}</td></tr>`;
       }).join("");
       const key = `${day}|||${time}`;
-      return `<details class="poster-slot" open><summary class="poster-slot-head"><span>${esc(time)} <span class="small">(${items.length} papers · target ${target})</span></span><button class="btn secondary compact-action" type="button" data-focus-kind="poster" data-focus-key="${esc(key)}">Refine this block</button></summary><table class="poster-table"><thead><tr><th>Favorite</th><th>Priority</th><th>Rank</th><th>ID</th><th>Title</th><th>Location</th><th>Score</th><th>Personal</th></tr></thead><tbody>${rows}</tbody></table></details>`;
+      return `<details class="poster-slot" ${disclosureAttribute("posters", day, time)} open><summary class="poster-slot-head"><span>${esc(time)} <span class="small">(${items.length} papers · target ${target})</span></span><button class="btn secondary compact-action" type="button" data-focus-kind="poster" data-focus-key="${esc(key)}">Refine this block</button></summary><table class="poster-table"><thead><tr><th>Favorite</th><th>Priority</th><th>Rank</th><th>ID</th><th>Title</th><th>Location</th><th>Score</th><th>Personal</th></tr></thead><tbody>${rows}</tbody></table></details>`;
     }).join("");
-    return `<details class="poster-day" open><summary class="poster-day-head">${esc(day)}</summary>${blocks}</details>`;
+    return `<details class="poster-day" ${disclosureAttribute("posters", day)} open><summary class="poster-day-head">${esc(day)}</summary>${blocks}</details>`;
   }).join("");
 }
 
@@ -989,7 +1010,7 @@ function renderAgenda() {
   if (!events.length) { root.innerHTML = '<section class="panel"><div class="small">No scheduled presentations are available yet.</div></section>'; return; }
   const byDate = new Map();
   for (const event of events) { if (!byDate.has(event.date)) byDate.set(event.date, []); byDate.get(event.date).push(event); }
-  root.innerHTML = [...byDate.entries()].map(([date, dayEvents]) => `<details class="agenda-day" open><summary>${esc(date)} · ${dayEvents.length} agenda decisions</summary>${dayEvents.map((event) => {
+  root.innerHTML = [...byDate.entries()].map(([date, dayEvents]) => `<details class="agenda-day" ${disclosureAttribute("agenda", date)} open><summary>${esc(date)} · ${dayEvents.length} agenda decisions</summary>${dayEvents.map((event) => {
     if (event.kind === "oral") {
       const reasonPaper = event.primary.papers[0];
       return `<article class="agenda-item"><div><div class="agenda-time">${esc(event.time)}</div><div class="agenda-kind">Oral session</div></div><div><div class="agenda-title">${esc(event.primary.room)} <span class="confidence ${event.confidence}">${event.confidence}</span> ${event.conflict ? '<span class="conflict-badge">overlaps poster block</span>' : ""}</div><div class="agenda-sub">Backup: ${esc(event.backup?.room || "None")} · ${event.primary.papers.length} talks in recommended room</div><div class="recommendation-reason">Why: ${esc(recommendationReason(reasonPaper))}</div><div class="agenda-paper-list">${event.primary.papers.slice(0, 3).map(agendaPaperHtml).join("")}</div></div><div class="agenda-item-actions"><button class="btn secondary compact-action" data-focus-kind="oral" data-focus-key="${esc(event.key)}">${event.confidence === "unresolved" ? "Resolve choice" : "Refine"}</button>${planButton(reasonPaper.id)}</div></article>`;
@@ -1026,7 +1047,9 @@ function exportAgendaCalendar() {
 }
 
 function renderAll() {
+  captureDisclosureState();
   renderStats(); renderOnboarding(); renderAgenda(); renderOverview(); renderSmartProgress(); renderLeaderboard(); renderOralSchedule(); renderPosters(); nextPair();
+  restoreDisclosureState();
 }
 
 function fillSelect(id, label, values) {
